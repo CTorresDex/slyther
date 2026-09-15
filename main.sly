@@ -5,9 +5,12 @@ class SlytherArtifact {
     - artifact: The kind of the artifact, ex. class, function, etc...
     - name: The name of the artifact to be created, optionally qualified as `Parent::child` to declare it
       inside another artifact; the parent must be declared too, otherwise it must throw an error
+    - args: The arguments declared between parens after the name, as `name: value` pairs, in the order written.
+      Each value is parsed by the way it is written: quoted is a string, digits are a number, true and false are a
+      boolean, and a bare symbol is a type, which must be a declared artifact, otherwise it must throw an error
     - content: The prose written inside the artifact
-    - references: `kind:name` of the references found in the artifact prose, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error
-    - hash: The hash of the artifact, the name and the content
+    - references: `kind:name` of the references found in the artifact prose and of the types of its args, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error
+    - hash: The hash of the artifact, the name, the args and the content
 }
 
 class SlytherClosureHasher {
@@ -30,4 +33,8 @@ class ParsedSlytherScript {
 
 class SlytherParser {
     Reads a #{SlytherScript} and returns a #{ParsedSlytherScript}
+}
+
+method SlytherParser::parse (script: SlytherScript) {
+    Parses the #{SlytherScript} and returns a #{ParsedSlytherScript}
 }

@@ -7,11 +7,23 @@ export class SlytherArtifact {
     constructor(
         readonly artifact: string,
         readonly name: string,
+        readonly args: {
+            name: string;
+            kind: "string" | "number" | "boolean" | "type";
+            value: string | number | boolean;
+        }[],
         readonly content: string,
         readonly references: string[],
     ) {
         this.hash = createHash("sha256")
-            .update([artifact, name, content].join("\n"))
+            .update(
+                [
+                    artifact,
+                    name,
+                    args.map((arg) => `${arg.name}=${arg.kind}:${String(arg.value)}`).join(","),
+                    content,
+                ].join("\n"),
+            )
             .digest("hex");
     }
 }
