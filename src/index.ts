@@ -1,15 +1,6 @@
-import { readFile } from "fs/promises";
-import { SlytherParser } from "./src/classes/SlytherParser.class.ts";
-import { SlytherScript } from "./src/classes/SlytherScript.class.ts";
+import { CLI } from "./src/classes/CLI.class.ts";
 
-
-async function main() {
-    const file = await readFile("./main.sly", "utf8");
-    const parser = new SlytherParser();
-    const script = new SlytherScript(file);
-    const parsed = parser.parse(script);
-
-    console.log(parsed);
-}
-
-main();
+CLI.run().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+});

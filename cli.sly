@@ -1,0 +1,7 @@
+@use Compiler
+
+command parse {
+    Input: input file
+
+    Parses the input file and prints the JSON representation of the result #{ParsedSlytherScript}
+}
