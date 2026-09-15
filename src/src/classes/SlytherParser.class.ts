@@ -6,11 +6,13 @@ import type { SlytherScript } from "./SlytherScript.class.ts";
 
 export class SlytherParser {
     private static readonly DECLARATION =
-        /^\s*([A-Za-z_][\w-]*)\s+([A-Za-z_][\w-]*)\s*(\{)?\s*$/;
-    private static readonly REFERENCE = /(?<!\\)#\{\s*([A-Za-z_][\w-]*)\s*\}/g;
+        /^\s*([A-Za-z_][\w-]*)\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*(\{)?\s*$/;
+    private static readonly REFERENCE = /(?<!\\)#\{\s*([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*\}/g;
 
     parse(script: SlytherScript): ParsedSlytherScript {
         const declarations = this.scan(script.source);
+
+        this.checkParents(declarations);
 
         const artifacts = [...declarations].map(
             ([name, declaration]) =>
@@ -56,6 +58,18 @@ export class SlytherParser {
         }
 
         return declarations;
+    }
+
+    private checkParents(
+        declarations: Map<string, { artifact: string; content: string }>,
+    ): void {
+        for (const name of declarations.keys()) {
+            const boundary = name.lastIndexOf("::");
+
+            if (boundary >= 0 && !declarations.has(name.slice(0, boundary))) {
+                throw new Error(`Unknown parent "${name.slice(0, boundary)}" of "${name}".`);
+            }
+        }
     }
 
     private referencesOf(

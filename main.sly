@@ -3,7 +3,8 @@ class SlytherArtifact {
     Represents an instantiated artifact defined in an #{SlytherScript}, contains:
 
     - artifact: The kind of the artifact, ex. class, function, etc...
-    - name: The name of the artifact to be created
+    - name: The name of the artifact to be created, optionally qualified as `Parent::child` to declare it
+      inside another artifact; the parent must be declared too, otherwise it must throw an error
     - content: The prose written inside the artifact
     - references: `kind:name` of the references found in the artifact prose, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error
     - hash: The hash of the artifact, the name and the content
@@ -13,7 +14,8 @@ class SlytherClosureHasher {
     Computes the closure hash of every #{SlytherArtifact} of a list, keyed by `kind:name`.
 
     The closure hash of an artifact covers its own hash and, transitively, the hash of everything it
-    references, so it changes whenever any artifact it depends on changes.
+    references, so it changes whenever any artifact it depends on changes. A `Parent::child` name is a
+    dependency of its parent as well, so a parent changes whenever one of its children changes.
 
     It is cycle tolerant: mutually referencing artifacts are hashed as a single group, and each member
     of the group mixes its own hash into the group's, so members of a cycle keep distinct closure hashes.

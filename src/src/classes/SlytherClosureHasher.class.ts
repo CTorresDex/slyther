@@ -4,6 +4,7 @@ import type { SlytherArtifact } from "./SlytherArtifact.class.ts";
 
 export class SlytherClosureHasher {
     private artifacts = new Map<string, SlytherArtifact>();
+    private children = new Map<string, string[]>();
     private indexes = new Map<string, number>();
     private lowLinks = new Map<string, number>();
     private groups = new Map<string, number>();
@@ -16,6 +17,7 @@ export class SlytherClosureHasher {
         this.artifacts = new Map(
             artifacts.map((artifact) => [`${artifact.artifact}:${artifact.name}`, artifact]),
         );
+        this.children = this.childrenOf(this.artifacts);
         this.indexes = new Map();
         this.lowLinks = new Map();
         this.groups = new Map();
@@ -38,6 +40,22 @@ export class SlytherClosureHasher {
                     .digest("hex"),
             ]),
         );
+    }
+
+    private childrenOf(artifacts: Map<string, SlytherArtifact>): Map<string, string[]> {
+        const keysByName = new Map([...artifacts].map(([key, artifact]) => [artifact.name, key]));
+        const children = new Map<string, string[]>();
+
+        for (const [key, artifact] of artifacts) {
+            const boundary = artifact.name.lastIndexOf("::");
+            const parent = boundary < 0 ? undefined : keysByName.get(artifact.name.slice(0, boundary));
+
+            if (parent) {
+                children.set(parent, [...(children.get(parent) ?? []), key]);
+            }
+        }
+
+        return children;
     }
 
     private visit(key: string): void {
@@ -111,8 +129,10 @@ export class SlytherClosureHasher {
     }
 
     private referencesOf(key: string): string[] {
-        return (this.artifacts.get(key)?.references ?? []).filter((reference) =>
+        const references = (this.artifacts.get(key)?.references ?? []).filter((reference) =>
             this.artifacts.has(reference),
         );
+
+        return [...new Set([...references, ...(this.children.get(key) ?? [])])];
     }
 }
