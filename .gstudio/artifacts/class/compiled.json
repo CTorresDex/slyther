@@ -1,50 +1,50 @@
 {
     "steps": {
         ".gstudio/artifacts/class/scripts/create/step-2.ts": {
-            "hash": "28cea1bcdabfb2355ff8e6227ee359fa1079dccb704007f164e063a946de0b96",
-            "instruction": "Run {{script}} <id> to scaffold the class, where <id> is the class identifier (e.g. kebab-case or camelCase) to convert to PascalCase for the generated file."
+            "hash": "a9e05ef9da17aad7bc1a4c0fdeac8d52f8758c5b08069bc53562491d7ddb9c29",
+            "instruction": "Run `{{script}} <name>` where `<name>` is the class id (any case; it is converted to PascalCase) to scaffold the class file."
         },
         ".gstudio/artifacts/class/scripts/list/step-2.ts": {
-            "hash": "476ee876ed0e1496932c6d4bfb918e030c25581b679faeee286c1085081774fa",
-            "instruction": "Run {{script}} [searchTerm] to list all classes (optionally filtered to those whose file contents include searchTerm)."
+            "hash": "4e6bc12688db731aee397721b7695e3e01b697522dca2a475f2e07b493b2926c",
+            "instruction": "Run {{script}} [searchTerm] to list all classes, optionally filtering to only those whose file contents include the given searchTerm."
         },
         ".gstudio/artifacts/class/scripts/update/step-2.ts": {
-            "hash": "0d01f8cb995674342d435787671c8ea94b0f9bb625eeeb3981bd900b5dacf55a",
-            "instruction": "Run the script as `{{script}} <id> <change-request>`, where `<id>` is the class identifier to check and `<change-request>` is the requested change (unused by this step but accepted as input)."
+            "hash": "28f61edfc4652207f47c0788ec17360e37783c7a5d6d4bdafe49141b0da6cfc8",
+            "instruction": "Run {{script}} <id> with the class's id as the argument to verify the class exists before proceeding."
         },
         ".gstudio/artifacts/class/scripts/delete/step-2.ts": {
-            "hash": "2af42a4ceed02e187acd813c9fefec90add999154b03425466de9f2e7cd9b2fc",
-            "instruction": "Run {{script}} <id> where <id> is the class identifier to delete."
+            "hash": "126d688f751d4e7de5e04b71bac2a277ebc21a3f80b1cdb6d01db799f9a5cbde",
+            "instruction": "Run {{script}} <id> with the class's id (e.g. its kebab/camel-case name) as the argument."
         },
         ".gstudio/artifacts/class/scripts/delete/step-3.sh": {
-            "hash": "6f5bd69b0b899cd92fff63e647b6a642301cbb488193cdafc9eeedb835897a89",
-            "instruction": "Run `{{script}} <id>` where `<id>` is the class id, to print every existing reference to that class in the codebase as `[file path]:[line number]` lines."
+            "hash": "4f8f35680e49816cf7122532a3bf0a77ac3a7477dcac4e17c96c636935ce3c2a",
+            "instruction": "Run {{script}} <id> with the class's id (the same id used to create/delete it) to print every remaining reference as `[file path]:[line number]`."
         },
         ".gstudio/artifacts/class/scripts/evaluate/step-2.ts": {
-            "hash": "4aeca0539bc07467019ac0df371ef6e48c684e19ea47de006552ea9590d76958",
-            "instruction": "Run `{{script}} <id>` where `<id>` is the class identifier to evaluate against `src/classes/{PascalCaseId}.class.ts`."
+            "hash": "1c959aa671ee5a2a0becdd857e9c11cf1ba72a9688249c7e1e7b6ee1daa9b2da",
+            "instruction": "Run {{script}} <id> where <id> is the class identifier to evaluate (e.g. `{{script}} my-class`)."
         }
     },
     "descriptions": {
         "create": {
-            "hash": "7c2feee8231f3802c19353647b3e8ae681a393d75e9865736b41fe69040d5177",
-            "text": "Scaffolds a new class file at src/classes/{Name}.class.ts given a class id and optional initial content, failing if it already exists."
+            "hash": "ee14577975e724b2e7231488af61f26b334da1261fb122b71683876b25a5511b",
+            "text": "Scaffolds a new class file at src/src/classes/{Name}.class.ts with a minimal class definition, given an id and optional initial content."
         },
         "list": {
-            "hash": "9858878e0de2b07905effed496019fc688bf3278ef950ca90e7edc1373d6d920",
-            "text": "Lists classes defined under src/classes whose id or path matches an optional search term, printing each as id: file path."
+            "hash": "36a1da3d53974ff0d7ae660408140fdac571a1c81d55de1ab86c81ece1aa1ea4",
+            "text": "Lists all classes defined in the codebase, optionally filtered by a search term, printing each as \"[id]: [file path]\"."
         },
         "update": {
-            "hash": "f4f89113509cfcfbb4772d0e42e7a06527e89c5dd2e2292e4f5a28ac3dff4899",
-            "text": "Modifies an existing class file at src/classes/{name}.class.ts to satisfy a given change request, erroring if the class does not exist."
+            "hash": "bfa2718872b4b36bcb81a353b31d8c44b99a625f0dc0c9b1f033b55566e1451e",
+            "text": "Updates an existing class artifact's source file according to a given id and natural-language change request, erroring if the class doesn't exist."
         },
         "delete": {
-            "hash": "37bb4edc143f526a2614f850bc451ab27c0fee71339e41f18de57b17ab784341",
-            "text": "Deletes a class file by id from src/classes, then finds and removes all dangling references to it in the codebase."
+            "hash": "04e2d014f268dbe2ac05062fd67e5d94dbb9b539ff942dc2a694761b82a673a6",
+            "text": "Deletes the class artifact with the given id from src/src/classes, removing its file and cleaning up any dangling references to it in the codebase."
         },
         "evaluate": {
-            "hash": "b3536711b84062c619c33c38310de75dee57bc555dd97e039c4fba141dd83456",
-            "text": "Checks that a class file matches the required location, shape, and scoping rules for a given class id, printing discrepancies as ERROR_CODE: message and exiting nonzero if any are found."
+            "hash": "4e2aac1c6fa605907af9194c1e2160ea69ca4b92ba1888d4e29a598919218921",
+            "text": "Checks that a class artifact's file, structure, and shape comply with the artifact rules, given the class's id, and reports pass/fail with any discrepancies."
         }
     }
 }

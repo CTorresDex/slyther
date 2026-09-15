@@ -14,10 +14,11 @@ function_name=$(printf '%s' "$id" | awk '{
     result = "";
     for (i = 1; i <= n; i++) {
         if (parts[i] != "") {
+            word = parts[i];
             if (result == "") {
-                result = tolower(substr(parts[i], 1, 1)) substr(parts[i], 2);
+                result = tolower(substr(word, 1, 1)) substr(word, 2);
             } else {
-                result = result toupper(substr(parts[i], 1, 1)) substr(parts[i], 2);
+                result = result toupper(substr(word, 1, 1)) substr(word, 2);
             }
         }
     }

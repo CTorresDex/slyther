@@ -1,6 +1,3 @@
-I mistakenly tried to write to a file — the task only asks me to output the script contents as text, not write it to disk.
-
-```ts
 import { existsSync, unlinkSync } from "fs";
 import { join } from "path";
 
@@ -18,13 +15,13 @@ if (!id) {
 }
 
 const name = toCamelCase(id);
-const filePath = join("src", "singletons", `${name}.singleton.ts`);
+const filePath = join("src", "src", "singletons", `${name}.singleton.ts`);
 
 if (!existsSync(filePath)) {
-  console.error(`Error: singleton does not exist at ${filePath}.`);
+  console.error(`Error: singleton "${id}" does not exist (expected file at ${filePath}).`);
   process.exit(1);
 }
 
 unlinkSync(filePath);
 
-console.log(`Removed singleton at ${filePath}.`);
+console.log(`Deleted singleton at ${filePath}.`);

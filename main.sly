@@ -5,6 +5,7 @@ class SlytherArtifact {
     - artifact: The kind of the artifact, ex. class, function, etc...
     - name: The name of the artifact to be created
     - content: The prose written inside the artifact
+    - hash: The hash of all the fields above
 }
 
 class ParsedSlytherScript {

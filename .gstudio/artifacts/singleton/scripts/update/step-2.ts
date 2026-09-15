@@ -1,3 +1,7 @@
+Now I have a clear pattern to follow, consistent with the existing singleton create script's `toCamelCase` helper and path convention.
+
+.gstudio/artifacts/singleton/scripts/update/step-2.ts
+```ts
 import { existsSync } from "fs";
 import { join } from "path";
 
@@ -15,9 +19,9 @@ if (!id) {
 }
 
 const name = toCamelCase(id);
-const filePath = join("src", "singletons", `${name}.singleton.ts`);
+const filePath = join("src", "src", "singletons", `${name}.singleton.ts`);
 
 if (!existsSync(filePath)) {
-  console.error(`Error: singleton does not exist at ${filePath}.`);
+  console.error(`Error: singleton "${id}" does not exist (expected file at ${filePath}).`);
   process.exit(1);
 }

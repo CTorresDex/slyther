@@ -1,32 +1,41 @@
-import { existsSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+Now I have enough context on conventions. I'll produce the delete step-2.ts script.
+
+import { existsSync, unlinkSync } from "fs";
+import { join } from "path";
 
 function toPascalCase(input: string): string {
-  return input
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(/[^a-zA-Z0-9]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join("");
+    return input
+        .split(/[^a-zA-Z0-9]+/)
+        .filter(Boolean)
+        .map((word) => {
+            if (/^[A-Z0-9]+$/.test(word)) {
+                return word.charAt(0) + word.slice(1).toLowerCase();
+            }
+            const parts = word.split(/(?=[A-Z])/);
+            return parts
+                .map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+                .join("");
+        })
+        .join("");
 }
 
-function main(): void {
-  const id = process.argv[2];
-  if (!id) {
-    console.error("Usage: step-2.ts <id>");
-    process.exit(1);
-  }
+function main() {
+    const [id] = process.argv.slice(2);
 
-  const className = toPascalCase(id);
-  const filePath = join("src", "classes", `${className}.class.ts`);
+    if (!id) {
+        console.error("Error: missing required argument <id>.");
+        process.exit(1);
+    }
 
-  if (!existsSync(filePath)) {
-    console.error(`Class "${className}" does not exist at ${filePath}`);
-    process.exit(1);
-  }
+    const className = toPascalCase(id);
+    const classPath = join("src", "src", "classes", `${className}.class.ts`);
 
-  unlinkSync(filePath);
-  console.log(`Deleted ${filePath}`);
+    if (!existsSync(classPath)) {
+        console.error(`Error: class "${id}" does not exist (expected file at ${classPath}).`);
+        process.exit(1);
+    }
+
+    unlinkSync(classPath);
 }
 
 main();

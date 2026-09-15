@@ -3,7 +3,7 @@ import * as path from "node:path";
 
 const searchTerm = process.argv[2];
 
-const classesDir = path.join(process.cwd(), "src", "classes");
+const classesDir = path.join(process.cwd(), "src", "src", "classes");
 
 if (!fs.existsSync(classesDir)) {
     process.exit(0);
@@ -17,7 +17,7 @@ const entries = fs
 
 for (const fileName of entries) {
     const id = fileName.slice(0, -".class.ts".length);
-    const filePath = path.join("src", "classes", fileName);
+    const filePath = path.join("src", "src", "classes", fileName);
 
     if (searchTerm) {
         const content = fs.readFileSync(path.join(classesDir, fileName), "utf-8");

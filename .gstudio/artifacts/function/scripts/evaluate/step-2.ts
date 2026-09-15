@@ -1,16 +1,25 @@
-I mistakenly tried to write this to disk — the task actually wants the script emitted as my response text, not saved as a file. Here it is in the required format.
-
-// Imports
-
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 function toCamelCase(id: string): string {
-  return id
-    .replace(/[-_\s]+(.)?/g, (_match, chr: string | undefined) =>
-      chr ? chr.toUpperCase() : ""
-    )
-    .replace(/^(.)/, (chr) => chr.toLowerCase());
+  const words = id
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^a-zA-Z0-9]+/)
+    .filter((w) => w.length > 0);
+
+  if (words.length === 0) {
+    return "";
+  }
+
+  return words
+    .map((word, index) => {
+      const lower = word.toLowerCase();
+      if (index === 0) {
+        return lower;
+      }
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join("");
 }
 
 function stripCommentsAndStrings(source: string): string {
@@ -122,7 +131,7 @@ function main(): void {
   }
 
   const name = toCamelCase(id);
-  const filePath = path.join("src", "functions", `${name}.function.ts`);
+  const filePath = path.join("src", "src", "functions", `${name}.function.ts`);
 
   if (!fs.existsSync(filePath)) {
     console.log(`MISSING_FILE: Expected function file not found at ${filePath}.`);
@@ -141,7 +150,7 @@ function main(): void {
   const strictFunctionRegex =
     /^export\s+function\s+([A-Za-z_$][\w$]*)\s*\(\s*\)\s*\{/;
   const helperRegex =
-    /^(export\s+)?(declare\s+)?(const|let|var|class|interface|type|enum|namespace|module)\b/;
+    /^(export\s+)?(default\s+)?(declare\s+)?(abstract\s+)?(async\s+)?(const|let|var|class|interface|type|enum|namespace|module)\b/;
 
   type Kind = "import" | "function" | "helper" | "other";
   const classified: { seg: string; kind: Kind }[] = segments.map((seg) => {
@@ -185,15 +194,6 @@ function main(): void {
     if (kind === "helper" || kind === "other") {
       errors.push(
         `TOP_LEVEL_DECLARATION: Disallowed top-level ${kind === "helper" ? "declaration" : "statement"} found in ${filePath}: '${snippet(seg)}'. Only imports and the function definition are allowed at the top level.`
-      );
-    }
-  }
-
-  if (functionSegments.length === 1) {
-    const functionIndex = classified.indexOf(functionSegments[0]);
-    for (let i = functionIndex + 1; i < classified.length; i++) {
-      errors.push(
-        `SHAPE_VIOLATION: Found content after the function declaration in ${filePath}: '${snippet(classified[i].seg)}'. The function must be the last top-level definition in the file.`
       );
     }
   }

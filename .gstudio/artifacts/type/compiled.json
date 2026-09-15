@@ -1,50 +1,50 @@
 {
     "steps": {
         ".gstudio/artifacts/type/scripts/create/step-2.ts": {
-            "hash": "66d76e70d36151595d508922e34197f7081d6db9173503241061399765b06eb8",
-            "instruction": "Run {{script}} <id> [content] to scaffold the type, where <id> is the type's identifier and the optional [content] is the body to place inside the type definition."
+            "hash": "408d199e5c4ec49165e9fe4b59c89046dd8fc067731a92a01fc50d804b24f025",
+            "instruction": "Run {{script}} <id> to scaffold the new type, where <id> is the type's identifier."
         },
         ".gstudio/artifacts/type/scripts/list/step-2.ts": {
-            "hash": "5f36a582de4b04754d513cacf101579da73cc4190cd563402d61d36e2de96f67",
-            "instruction": "Run {{script}} [searchTerm] where searchTerm is an optional string to filter type ids."
+            "hash": "31a985242d86f5bfc517ac309631bfdc6c2836a800ed8481cc840df99e7f1447",
+            "instruction": "Run {{script}} [searchTerm] from the project root, where `searchTerm` is an optional string to filter types by content."
         },
         ".gstudio/artifacts/type/scripts/update/step-2.ts": {
-            "hash": "248e78cf83174d3f6bf16de3749a8a8135d2ae26f43da96dd6c39daf73034a0a",
-            "instruction": "Run {{script}} <id> <change-request> to verify the type identified by `<id>` exists before proceeding with the update."
+            "hash": "2c1a3ae660492fafb3479da8fb86509f28f5b424fade48a507a93f1e246acee3",
+            "instruction": "Run {{script}} <id> to verify that the type identified by `<id>` exists before continuing the update action."
         },
         ".gstudio/artifacts/type/scripts/delete/step-2.ts": {
-            "hash": "bbb9743f350076a43d9f75ce160ad038555b54858bc2655f1e5cc8e78a9c9a97",
-            "instruction": "Run {{script}} <id> to delete the type identified by `id`."
+            "hash": "f1d28e9d2ab43eee3c487d92f6350fafa7db632d9a07b932dc493dcb5af78818",
+            "instruction": "Run {{script}} <id> where <id> is the type's identifier (e.g. `{{script}} myType`)."
         },
         ".gstudio/artifacts/type/scripts/delete/step-3.sh": {
-            "hash": "bfadd701c03f3730ba658b8e09d940febfb19515ec6518d702559ba0bfeda550",
-            "instruction": "Run {{script}} <id>, passing the same type id used for the delete action, to print every existing reference to that type as `[file path]:[line number]` lines."
+            "hash": "ddd2a51925a370b336bcfafc0212243604eeaa6a090b7c521bdc1404e391b87e",
+            "instruction": "Run {{script}} <id> to print every existing reference to the type's PascalCase name in the codebase, each on its own `[file path]:[line number]` line."
         },
         ".gstudio/artifacts/type/scripts/evaluate/step-2.ts": {
-            "hash": "1897d72212b9749bb72248fd1c3ec444ca6b4a93c71f2d62b6f8578fc2ac5c5f",
-            "instruction": "Run `{{script}} <id>` where `<id>` is the type's identifier (e.g. `user`), to evaluate the corresponding type file against the rules."
+            "hash": "b0331efd3db1a0b8268db2b1637e13b70eb7435607469faeb76c7584907b2270",
+            "instruction": "Run {{script}} <id> from the project root, passing the artifact's id as the sole argument."
         }
     },
     "descriptions": {
         "create": {
-            "hash": "78529e267e02d76d22a72083203e6b6de95fc71e3b8538324c2d769a9682e60a",
-            "text": "Scaffolds a new type file at src/types/{Name}.type.ts given a type id and optional initial definition, failing if the file already exists."
+            "hash": "680a6903841f3e9b77a26055112600ffd1dcde979a55df9fa01e75d5fbd73f77",
+            "text": "Scaffolds a new type definition file at src/src/types/{Name}.type.ts from an id and optional content, failing if the file already exists."
         },
         "list": {
-            "hash": "67301c8ce44c671b32d07e2d6495f367112b7d013273b3bf7c1ba9120cde37f0",
-            "text": "Lists type artifacts under src/types matching an optional search term, printing each as id: file path."
+            "hash": "2cb55414d84e1e2063aaa1be1fcd477066e666b012d056e225de85b3fd265460",
+            "text": "Lists type artifacts in the codebase matching an optional search term, printing each result's id and file path."
         },
         "update": {
-            "hash": "e8aecbd84fbaccb4d1644bf34589eb29700192a633da02af117846344e8cf706",
-            "text": "Modifies an existing type at src/types/{name}.type.ts to satisfy a given change request, erroring if the type does not exist."
+            "hash": "c22a109ab28575d2e3462f1733e38bcb2d3bc8fc868300f988038443cb7566f2",
+            "text": "Updates an existing type artifact's source file to satisfy a natural-language change request, given its id, erroring if the type doesn't exist."
         },
         "delete": {
-            "hash": "ec6d277da8f8f8ad195f0c98a104a858e61ba2c20074897e24699966714ef129",
-            "text": "Deletes a type artifact by id from src/types, then finds, prints, and removes all dangling references to it in the codebase."
+            "hash": "f8ab2c4201b0e7e708f8d27e45b36ffc9fcee229c890479e54e5c2408939641b",
+            "text": "Deletes a type artifact by id, removing its file and cleaning up dangling references to it across the codebase."
         },
         "evaluate": {
-            "hash": "5ec94a6a8688afc1b7e4ade5f64e44b8cf4b0178e8c3aed9b5c518c2e3842e76",
-            "text": "Checks that a type artifact's file path, single top-level definition, strict shape, and domain-only scope comply with the type rules, given a type id."
+            "hash": "57c52b6e1e55f33aa83ae44b0b1da382277732fdca35a113903650d9b7a5d735",
+            "text": "Checks that a type artifact's file location, single top-level shape, and domain-only scope comply with the rules, given the type's id, printing pass or itemized rule violations."
         }
     }
 }

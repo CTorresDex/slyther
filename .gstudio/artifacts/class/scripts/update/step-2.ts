@@ -1,3 +1,5 @@
+I don't have permission to write to that file in this environment. Per the task instructions, I'll output the script contents directly instead.
+
 import { existsSync } from "fs";
 import { join } from "path";
 
@@ -26,7 +28,7 @@ function main() {
     }
 
     const className = toPascalCase(id);
-    const classPath = join("src", "classes", `${className}.class.ts`);
+    const classPath = join("src", "src", "classes", `${className}.class.ts`);
 
     if (!existsSync(classPath)) {
         console.error(`Error: class "${id}" does not exist (expected file at ${classPath}).`);

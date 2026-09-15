@@ -116,9 +116,7 @@ function main(): void {
   }
 
   const name = toCamelCase(id);
-  const filePath = path.join("src", "singletons", `${name}.singleton.ts`);
-
-  const errors: string[] = [];
+  const filePath = path.join("src", "src", "singletons", `${name}.singleton.ts`);
 
   if (!fs.existsSync(filePath)) {
     console.log(`MISSING_FILE: Expected singleton file not found at ${filePath}.`);
@@ -128,6 +126,8 @@ function main(): void {
   const source = fs.readFileSync(filePath, "utf-8");
   const sanitized = stripCommentsAndStrings(source);
   const segments = splitTopLevelSegments(sanitized);
+
+  const errors: string[] = [];
 
   const importRegex = /^import\b/;
   const reexportRegex = /^export\s*(\*|\{)/;

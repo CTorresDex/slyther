@@ -118,7 +118,7 @@ function main(): void {
   }
 
   const className = toPascalCase(id);
-  const filePath = path.join("src", "classes", `${className}.class.ts`);
+  const filePath = path.join("src", "src", "classes", `${className}.class.ts`);
 
   const errors: string[] = [];
 

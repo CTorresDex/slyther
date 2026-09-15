@@ -1,50 +1,50 @@
 {
     "steps": {
         ".gstudio/artifacts/enum/scripts/create/step-2.ts": {
-            "hash": "9e13a40bd750b424860f39379e81ccbed214caac5cec33962c158385e001bc93",
-            "instruction": "Run {{script}} <id> with the enum's id as the first argument to scaffold the enum file."
+            "hash": "7917e30e0fc8b5615afa31ab9da6f93bcdb19df53f0741264b3aa83e01a91bd0",
+            "instruction": "Run {{script}} <id> where <id> is the enum identifier (e.g. `{{script}} paymentStatus`)."
         },
         ".gstudio/artifacts/enum/scripts/list/step-2.ts": {
-            "hash": "9f2d239e3707b18a9a13d7e1a263f114b3576b29b926e601d34d5c0605320042",
-            "instruction": "Run {{script}} [searchTerm] to list all enums under src/enums, optionally filtered to those whose file contents include the given search term."
+            "hash": "15d45d5924da7b590738d8ceee3d8a76eee514e99d36bc0cc3fceec21539a398",
+            "instruction": "Run {{script}} [searchTerm] to list all enums (optionally filtered to those whose name contains searchTerm)."
         },
         ".gstudio/artifacts/enum/scripts/update/step-2.ts": {
-            "hash": "20060f67a7fd02f310a004a2d1fcf523485a3fdcb71227afb761892c49b011e6",
-            "instruction": "Run `{{script}} <id> <change-request>` to verify the enum identified by `<id>` exists before applying the change request."
+            "hash": "69d95046b2523902838ff6df56fcb64e18d8a6653422458052a1bca859219c1f",
+            "instruction": "Run {{script}} <id> <change-request> to verify the enum identified by `<id>` exists before applying the change request."
         },
         ".gstudio/artifacts/enum/scripts/delete/step-2.ts": {
-            "hash": "bf56a3a73d52e98cafff90dbabbf9c5078abe40cf0ec35b87f0a15981385b3f2",
-            "instruction": "Run {{script}} <id> to delete the enum identified by `id`, exiting with an error if it does not exist."
+            "hash": "77cfaa7898083e7c76c760b859934298b99a4677963ec9d2c6bcc9c91697352b",
+            "instruction": "Run `{{script}} <id>` where `<id>` is the enum's id, to delete the corresponding enum file if it exists."
         },
         ".gstudio/artifacts/enum/scripts/delete/step-3.sh": {
-            "hash": "ee26827468a2e76234799a49905cc619598d23aabc9d0e567f16e113176c0b5a",
-            "instruction": "Run {{script}} <id> to print every existing reference to the enum, one per line as `[file path]:[line number]`."
+            "hash": "6f6d776f89afdf6784aea632a1a9e90e34511457af1a0779e9063588658f7742",
+            "instruction": "Run {{script}} <id> where <id> is the enum's identifier, to print every \"file path:line number\" reference to that enum found in the codebase."
         },
         ".gstudio/artifacts/enum/scripts/evaluate/step-2.ts": {
-            "hash": "d5aa180132d864e19ba6b2cef369ab9a0dd573af79874301609bb962d6976f10",
-            "instruction": "Run {{script}} <id> where <id> is the enum's id (it will be converted to PascalCase to resolve the enum file)."
+            "hash": "f0998e70bb5acea541847adace44212dd81e5aad7705e3cca7c538bf2177ea84",
+            "instruction": "Run {{script}} <id> to evaluate the enum artifact identified by <id> (its PascalCase name resolves the file at src/src/enums/{Name}.enum.ts)."
         }
     },
     "descriptions": {
         "create": {
-            "hash": "92b2eb63edb7c803afff20c2a4b8b41097e3cbc9007763cbaccb36601b969188",
-            "text": "Scaffolds a new enum file at src/enums/{Name}.enum.ts given an enum id and optional initial members, failing if the file already exists."
+            "hash": "33d312c36aeb6334bf1946d11d11a2723308a9a6783c9bae5b411172d81487cb",
+            "text": "Scaffolds a new enum file at src/src/enums/{Name}.enum.ts with minimal members, given an id and optional member list."
         },
         "list": {
-            "hash": "b5b9d5f236f5a50334d8a00beb266818af8a35c78d3f1d793934270ac74beb50",
-            "text": "Lists enums under src/enums matching an optional search term and prints each as id: file path."
+            "hash": "f9586af49ac70cd6073b49cfe7694fb12b7a42fa3bd2f227ede17aa5ec1626b6",
+            "text": "Lists enum artifacts in the codebase matching an optional search term, printing each result's id and file path."
         },
         "update": {
-            "hash": "aab4a2fb737f83d12cf3542d513bf9ea20d950c05cc824e0ce37555ecf2dd202",
-            "text": "Modifies an existing enum file at src/enums/{name}.enum.ts to satisfy a given change request, erroring if the enum does not exist."
+            "hash": "e44c139f147229f5a4184e5b04851320072776ab14c41c05d40b9df358bf2bc4",
+            "text": "Updates an existing enum artifact's source file to satisfy a natural-language change request, given its id, erroring if the enum doesn't exist."
         },
         "delete": {
-            "hash": "9e850aa58fc5802718fdd1067b352043e2d7912fab4c893237666efc3be2cff9",
-            "text": "Deletes an enum by id from src/enums, then finds and removes all dangling references to it in the codebase."
+            "hash": "e3f89074aa293477a750c1331e2fb97c20ef10a7bc88e3a06e65c9df61b17caf",
+            "text": "Deletes the enum artifact with the given id from src/src/enums, removing its file and cleaning up dangling references to it across the codebase."
         },
         "evaluate": {
-            "hash": "edaabaf93a51b2bdaf29063d60d0250f447139100cbe8648f2b652efcf966f5a",
-            "text": "Checks that an enum artifact's file location, single top-level definition, and required shape comply with the enum rules, given an enum id."
+            "hash": "afc7dbfa50ac3964e785caf06c448b4f1257a386f9d717eb0cdfffd2763f97a9",
+            "text": "Checks that an enum artifact's file location, single top-level shape, and closed member set comply with the rules, given the enum's id, printing pass or itemized rule violations."
         }
     }
 }

@@ -1,35 +1,36 @@
-import { readdirSync, statSync } from "fs";
-import { join } from "path";
+Now I'll output the script directly rather than writing a file, since the instructions require the raw script text as the response format.
 
-const TYPES_DIR = "src/types";
-const FILE_SUFFIX = ".type.ts";
+```ts
+import * as fs from "fs";
+import * as path from "path";
 
-function toId(pascalName: string): string {
-    return pascalName.replace(/(?!^)([A-Z])/g, "-$1").toLowerCase();
+const searchTerm = process.argv[2];
+
+const typesDir = path.join("src", "src", "types");
+
+if (!fs.existsSync(typesDir) || !fs.statSync(typesDir).isDirectory()) {
+    process.exit(0);
 }
 
-function main(): void {
-    const searchTerm = process.argv[2];
+const files = fs
+    .readdirSync(typesDir)
+    .filter((file) => file.endsWith(".type.ts"))
+    .sort();
 
-    let entries: string[] = [];
-    try {
-        entries = readdirSync(TYPES_DIR);
-    } catch {
-        return;
+for (const file of files) {
+    const filePath = path.join(typesDir, file);
+    const content = fs.readFileSync(filePath, "utf-8");
+
+    const match = content.match(/export type (\w+)\s*=/);
+    if (!match) {
+        continue;
     }
 
-    for (const entry of entries) {
-        const fullPath = join(TYPES_DIR, entry);
-        if (!statSync(fullPath).isFile()) continue;
-        if (!entry.endsWith(FILE_SUFFIX)) continue;
+    const id = match[1];
 
-        const pascalName = entry.slice(0, -FILE_SUFFIX.length);
-        const id = toId(pascalName);
-
-        if (searchTerm && !id.includes(searchTerm.toLowerCase())) continue;
-
-        console.log(`[${id}]: ${fullPath}`);
+    if (searchTerm && !content.includes(searchTerm)) {
+        continue;
     }
+
+    console.log(`[${id}]: [${filePath}]`);
 }
-
-main();

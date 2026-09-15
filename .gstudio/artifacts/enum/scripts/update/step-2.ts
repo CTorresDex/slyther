@@ -1,38 +1,39 @@
-import { existsSync } from "fs";
-import { join } from "path";
+export {};
 
-function toPascalCase(id: string): string {
-    return id
+import * as fs from "fs";
+import * as path from "path";
+
+function toPascalCase(input: string): string {
+    return input
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
         .split(/[^a-zA-Z0-9]+/)
         .filter(Boolean)
-        .map((word) => {
-            const withInitialSplit = word.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
-            return withInitialSplit
-                .split(/\s+/)
-                .filter(Boolean)
-                .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-                .join("");
-        })
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
         .join("");
 }
 
-const id = process.argv[2];
+function main(): void {
+    const id = process.argv[2];
 
-if (!id) {
-    console.error("Error: missing required argument <id>.");
-    process.exit(1);
+    if (!id) {
+        console.error("Error: missing required argument <id>.");
+        process.exit(1);
+    }
+
+    const name = toPascalCase(id);
+
+    if (!name) {
+        console.error(`Error: could not derive a valid PascalCase name from "${id}".`);
+        process.exit(1);
+    }
+
+    const dir = path.join("src", "src", "enums");
+    const filePath = path.join(dir, `${name}.enum.ts`);
+
+    if (!fs.existsSync(filePath)) {
+        console.error(`Error: enum does not exist at ${filePath}.`);
+        process.exit(1);
+    }
 }
 
-const enumName = toPascalCase(id);
-
-if (!enumName) {
-    console.error(`Error: could not derive a valid enum name from id "${id}".`);
-    process.exit(1);
-}
-
-const filePath = join("src", "enums", `${enumName}.enum.ts`);
-
-if (!existsSync(filePath)) {
-    console.error(`Error: enum "${id}" does not exist (expected file at ${filePath}).`);
-    process.exit(1);
-}
+main();

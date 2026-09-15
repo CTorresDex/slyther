@@ -1,52 +1,44 @@
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { dirname } from "path";
+#!/usr/bin/env node
+import * as fs from "fs";
+import * as path from "path";
 
-function toPascalCase(id: string): string {
-    return id
-        .split(/[^a-zA-Z0-9]+/)
-        .filter(Boolean)
-        .map((word) => {
-            const withInitialSplit = word.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
-            return withInitialSplit
-                .split(/\s+/)
-                .filter(Boolean)
-                .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-                .join("");
-        })
+function toPascalCase(input: string): string {
+    const words = input
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .split(/[\s_\-]+/)
+        .filter(Boolean);
+    return words
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
         .join("");
 }
 
-const [id, content] = process.argv.slice(2);
+function main() {
+    const id = process.argv[2];
 
-if (!id) {
-    console.error("Missing required argument: id");
-    process.exit(1);
-}
+    if (!id || id.trim().length === 0) {
+        console.error("Error: missing required argument <id>.");
+        process.exit(1);
+    }
 
-const typeName = toPascalCase(id);
+    const typeName = toPascalCase(id);
+    const filePath = path.join("src", "src", "types", `${typeName}.type.ts`);
 
-if (!typeName) {
-    console.error(`Could not derive a valid type name from id "${id}"`);
-    process.exit(1);
-}
+    if (fs.existsSync(filePath)) {
+        console.error(`Error: type already exists at ${filePath}.`);
+        process.exit(1);
+    }
 
-const filePath = `src/types/${typeName}.type.ts`;
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true });
 
-if (existsSync(filePath)) {
-    console.error(`Type already exists at ${filePath}`);
-    process.exit(1);
-}
-
-const body = content && content.trim().length > 0 ? content : "    // type definition";
-
-const fileContents = `// Imports
+    const content = `// Imports
 
 export type ${typeName} = {
-${body}
 }
 `;
 
-mkdirSync(dirname(filePath), { recursive: true });
-writeFileSync(filePath, fileContents);
+    fs.writeFileSync(filePath, content);
+    console.log(`Scaffolded type at ${filePath}.`);
+}
 
-console.log(`Scaffolded type at ${filePath}`);
+main();

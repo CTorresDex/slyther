@@ -1,33 +1,28 @@
-Following the same pattern as the existing `class` list script, adapted for singletons (`src/singletons/*.singleton.ts`).
-
-```ts
-import * as fs from "node:fs";
-import * as path from "node:path";
+import { readdirSync } from "fs";
+import { join } from "path";
 
 const searchTerm = process.argv[2];
 
-const singletonsDir = path.join(process.cwd(), "src", "singletons");
+const singletonsDir = join("src", "src", "singletons");
+const suffix = ".singleton.ts";
 
-if (!fs.existsSync(singletonsDir)) {
-    process.exit(0);
+let files: string[] = [];
+try {
+  files = readdirSync(singletonsDir);
+} catch {
+  files = [];
 }
 
-const entries = fs
-    .readdirSync(singletonsDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".singleton.ts"))
-    .map((entry) => entry.name)
-    .sort();
+const entries = files
+  .filter((file) => file.endsWith(suffix))
+  .map((file) => {
+    const id = file.slice(0, -suffix.length);
+    const filePath = join(singletonsDir, file);
+    return { id, filePath };
+  })
+  .filter(({ id }) => !searchTerm || id.includes(searchTerm))
+  .sort((a, b) => a.id.localeCompare(b.id));
 
-for (const fileName of entries) {
-    const id = fileName.slice(0, -".singleton.ts".length);
-    const filePath = path.join("src", "singletons", fileName);
-
-    if (searchTerm) {
-        const content = fs.readFileSync(path.join(singletonsDir, fileName), "utf-8");
-        if (!content.includes(searchTerm)) {
-            continue;
-        }
-    }
-
-    console.log(`[${id}]: [${filePath}]`);
+for (const { id, filePath } of entries) {
+  console.log(`[${id}]: [${filePath}]`);
 }

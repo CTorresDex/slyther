@@ -1,28 +1,32 @@
-import { existsSync, readdirSync, readFileSync } from "fs";
-import { join } from "path";
+import * as fs from "fs";
+import * as path from "path";
 
 const searchTerm = process.argv[2];
 
-const enumsDir = join("src", "enums");
+const enumsDir = path.join("src", "src", "enums");
 
-if (!existsSync(enumsDir)) {
+if (!fs.existsSync(enumsDir) || !fs.statSync(enumsDir).isDirectory()) {
     process.exit(0);
 }
 
-const entries = readdirSync(enumsDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".enum.ts"))
-    .map((entry) => entry.name)
+const files = fs
+    .readdirSync(enumsDir)
+    .filter((file) => file.endsWith(".enum.ts"))
     .sort();
 
-for (const fileName of entries) {
-    const id = fileName.slice(0, -".enum.ts".length);
-    const filePath = join(enumsDir, fileName);
+for (const file of files) {
+    const filePath = path.join(enumsDir, file);
+    const content = fs.readFileSync(filePath, "utf-8");
 
-    if (searchTerm) {
-        const content = readFileSync(filePath, "utf-8");
-        if (!content.includes(searchTerm)) {
-            continue;
-        }
+    const match = content.match(/export enum (\w+)\s*\{/);
+    if (!match) {
+        continue;
+    }
+
+    const id = match[1];
+
+    if (searchTerm && !id.includes(searchTerm)) {
+        continue;
     }
 
     console.log(`[${id}]: [${filePath}]`);

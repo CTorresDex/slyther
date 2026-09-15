@@ -1,25 +1,36 @@
-import { existsSync } from "fs";
-import { join } from "path";
+import * as fs from "fs";
+import * as path from "path";
 
-function toPascalCase(id: string): string {
-    return id
+function toPascalCase(input: string): string {
+    return input
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
         .split(/[^a-zA-Z0-9]+/)
         .filter(Boolean)
-        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
         .join("");
 }
 
-const [id] = process.argv.slice(2);
+function main(): void {
+    const id = process.argv[2];
 
-if (!id) {
-    console.error("Error: <id> argument is required.");
-    process.exit(1);
+    if (!id) {
+        console.error("Error: missing required argument <id>.");
+        process.exit(1);
+    }
+
+    const name = toPascalCase(id);
+
+    if (!name) {
+        console.error(`Error: could not derive a valid PascalCase name from "${id}".`);
+        process.exit(1);
+    }
+
+    const filePath = path.join("src", "src", "types", `${name}.type.ts`);
+
+    if (!fs.existsSync(filePath)) {
+        console.error(`Error: type "${id}" does not exist (expected file at ${filePath}).`);
+        process.exit(1);
+    }
 }
 
-const pascalName = toPascalCase(id);
-const typePath = join("src", "types", `${pascalName}.type.ts`);
-
-if (!existsSync(typePath)) {
-    console.error(`Error: type "${id}" does not exist (expected file at ${typePath}).`);
-    process.exit(1);
-}
+main();

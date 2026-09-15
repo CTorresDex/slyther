@@ -8,14 +8,14 @@ if [ -z "$id" ]; then
     exit 1
 fi
 
-# Convert id to camelCase, as defined at the artifact rules (rule 2).
+# Convert id to camelCase, as defined at the artifact rules (rule 1/2).
 singleton_name=$(printf '%s' "$id" | awk '{
     n = split($0, parts, /[^a-zA-Z0-9]+/);
     result = "";
     for (i = 1; i <= n; i++) {
         if (parts[i] != "") {
-            if (result == "") {
-                result = tolower(substr(parts[i], 1, 1)) substr(parts[i], 2);
+            if (i == 1) {
+                result = result tolower(substr(parts[i], 1, 1)) substr(parts[i], 2);
             } else {
                 result = result toupper(substr(parts[i], 1, 1)) substr(parts[i], 2);
             }

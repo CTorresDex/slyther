@@ -1,37 +1,57 @@
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import * as fs from "fs";
+import * as path from "path";
 
-function toCamelCase(input: string): string {
-  return input
-    .replace(/[_-]+(.)/g, (_, chr: string) => chr.toUpperCase())
-    .replace(/^[A-Z]/, (chr) => chr.toLowerCase());
+function toCamelCase(id: string): string {
+  const words = id
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^a-zA-Z0-9]+/)
+    .filter((w) => w.length > 0);
+
+  if (words.length === 0) {
+    return "";
+  }
+
+  return words
+    .map((word, index) => {
+      const lower = word.toLowerCase();
+      if (index === 0) {
+        return lower;
+      }
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join("");
 }
 
-const id = process.argv[2];
+function main() {
+  const id = process.argv[2];
 
-if (!id) {
-  console.error("Error: missing required argument <id>.");
-  process.exit(1);
-}
+  if (!id) {
+    console.error("Error: missing required argument <id>.");
+    process.exit(1);
+  }
 
-const name = toCamelCase(id);
-const dir = join("src", "functions");
-const filePath = join(dir, `${name}.function.ts`);
+  const name = toCamelCase(id);
 
-if (existsSync(filePath)) {
-  console.error(`Error: function already exists at ${filePath}.`);
-  process.exit(1);
-}
+  if (!name) {
+    console.error(`Error: could not derive a valid function name from id "${id}".`);
+    process.exit(1);
+  }
 
-mkdirSync(dir, { recursive: true });
+  const filePath = path.join("src", "src", "functions", `${name}.function.ts`);
 
-const contents = `// Imports
+  if (fs.existsSync(filePath)) {
+    console.error(`Error: function already exists at ${filePath}.`);
+    process.exit(1);
+  }
 
-export function ${name}() {
-    // function definition
+  const content = `export function ${name}() {
 }
 `;
 
-writeFileSync(filePath, contents);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content);
 
-console.log(`Scaffolded function at ${filePath}.`);
+  console.log(`Created function "${name}" at ${filePath}.`);
+}
+
+main();

@@ -1,50 +1,50 @@
 {
     "steps": {
         ".gstudio/artifacts/singleton/scripts/create/step-2.ts": {
-            "hash": "6bcf50bea8823bc19ce14379f276111fccbf1a3cfd47f5df1033f1cde1eef8d0",
-            "instruction": "Run {{script}} <id> to scaffold the singleton, where <id> is the singleton's identifier (any case, will be converted to camelCase)."
+            "hash": "e595159eee4917b0511da369111bb612ff41211d473f148325348fa467025b30",
+            "instruction": "Run {{script}} <id> to scaffold the singleton, where <id> is the singleton's identifier."
         },
         ".gstudio/artifacts/singleton/scripts/list/step-2.ts": {
-            "hash": "bd8b54d5fe021155d06079e5fe7559c4749953f8b416d07807e7ef9894410132",
-            "instruction": "Run `{{script}} [search term]`, optionally passing a search term to filter singletons whose file contents include it."
+            "hash": "6cc16c1e7b7b6e1fd1e23d8e64b216b1b9d65c8c885a4709e53628db1ee1d447",
+            "instruction": "Run {{script}} [searchTerm] where searchTerm is an optional substring to filter singleton ids by."
         },
         ".gstudio/artifacts/singleton/scripts/update/step-2.ts": {
-            "hash": "4096e47907bb289c4a77bfb30acf9afc66494267361735b36dc17e0e4e3bff6a",
-            "instruction": "Run {{script}} <id> <change-request> to verify the singleton for <id> exists before applying the change request."
+            "hash": "6fc41f14d0bd79430acc26f164f43afd1400a1c95eff4d6f80501029abf4ebb5",
+            "instruction": "Run {{script}} <id> <change-request> to verify the singleton identified by `<id>` exists before it is updated."
         },
         ".gstudio/artifacts/singleton/scripts/delete/step-2.ts": {
-            "hash": "1a20ac6500bc3c74bc173a0d149b43a231c8ba6a7a54487d062496d7ea40cd60",
-            "instruction": "Run `{{script}} <id>` where `<id>` is the singleton's id."
+            "hash": "44c1efd0e58dc698d6fa03aac9257d7ec5ed20753cc330f87c671fdeac4cc5c7",
+            "instruction": "Run {{script}} <id> to delete the singleton with the given id, exiting with an error if it does not exist."
         },
         ".gstudio/artifacts/singleton/scripts/delete/step-3.sh": {
-            "hash": "4d75261241692cebe7c9742e467a25df72f3ad8bac92b4f3c3de261fb8316503",
-            "instruction": "Run {{script}} <id> to print every `file path:line number` reference to the singleton identified by `<id>` found in the codebase."
+            "hash": "7f874b575b18c78e5cd530d37b3cca7252ed3229a4c86aeb88eeda18176faeae",
+            "instruction": "Run {{script}} <id> to print every `[file path]:[line number]` reference to the singleton's camelCase identifier found in the codebase."
         },
         ".gstudio/artifacts/singleton/scripts/evaluate/step-2.ts": {
-            "hash": "adb46cf19093b838732b81f371f1382ec365ea681f14f0887d44b33ae4a8d55a",
-            "instruction": "Run {{script}} <id> where <id> is the singleton's identifier, to evaluate the corresponding src/singletons/{name}.singleton.ts file against the singleton rules."
+            "hash": "b688c3006487c6ebd9600940e9f4dcb848fcb2529567ebf052a63772c5b0533d",
+            "instruction": "Run {{script}} <id> where <id> is the singleton's id, e.g. `{{script}} userSession`."
         }
     },
     "descriptions": {
         "create": {
-            "hash": "7131cabb2ae9cb0ad906cee05084f1ddd1ba97592673970bdf4d72fe3edd1bb8",
-            "text": "Scaffolds a new singleton file at src/singletons/{name}.singleton.ts given an id and optional initial instance content, failing if the file already exists."
+            "hash": "fc245ba0e499c11fcdd52d8c3ab7e0588be1caa21246212073122f22e76c1a1a",
+            "text": "Scaffolds a new singleton file at src/src/singletons/{name}.singleton.ts with a minimal shared instance, given an id and optional initial content."
         },
         "list": {
-            "hash": "cf5f18a21dd6d5743866ae1213ebb309437be7229292b51b0320bb46f587fa19",
-            "text": "Lists singleton artifacts under src/singletons matching an optional search term, printing each as id: file path."
+            "hash": "24754f88580e6e47fb127a4acba32605d4f080f16bf2fb558af9f7301e38aaf2",
+            "text": "Lists singletons in the codebase matching an optional search term, printing each as \"[id]: [file path]\"."
         },
         "update": {
-            "hash": "ac2294308af9496c81051296320304ecd558c448b22e968254fbaadd7adf4b60",
-            "text": "Modifies an existing singleton file at src/singletons/{name}.singleton.ts to satisfy a given change request, erroring if the singleton does not exist."
+            "hash": "20e82ebd0ae910cc0d94a2d6a4f554765426e750b7b140d1f90334591276f36c",
+            "text": "Updates an existing singleton's source file to satisfy a natural-language change request, given its id, erroring if the singleton doesn't exist."
         },
         "delete": {
-            "hash": "8a15a6a4e027491e9864a17acf91326e575af4dd065da4e831b6c2330b6ab79d",
-            "text": "Removes a singleton file by id, then finds and removes all dangling references to it in the codebase."
+            "hash": "fd05c224b9dbd1161232ca124f26c86fcc0fc41c29dc48247f07002224c16e4f",
+            "text": "Deletes a singleton artifact by id, removing its file and cleaning up dangling references to it across the codebase."
         },
         "evaluate": {
-            "hash": "787cd85f896afd04036be9c688803a530cb49b62d75078ea2f58ad9f111217f1",
-            "text": "Checks a singleton's file location, naming, single top-level definition, and required shape against the rules, given a singleton id, and reports pass or itemized errors."
+            "hash": "91f8740617667b19c2d5f8c19d55f9f7ef6b59a7183949e99a899d0fbd9a1748",
+            "text": "Checks that the singleton artifact with the given id has correct file location, export name, and single top-level shape, printing pass or itemized rule violations."
         }
     }
 }

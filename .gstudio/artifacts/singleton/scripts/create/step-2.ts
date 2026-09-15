@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 
 function toCamelCase(input: string): string {
   return input
@@ -15,19 +15,18 @@ if (!id) {
 }
 
 const name = toCamelCase(id);
-const dir = join("src", "singletons");
-const filePath = join(dir, `${name}.singleton.ts`);
+const filePath = join("src", "src", "singletons", `${name}.singleton.ts`);
 
 if (existsSync(filePath)) {
   console.error(`Error: singleton already exists at ${filePath}.`);
   process.exit(1);
 }
 
-mkdirSync(dir, { recursive: true });
+mkdirSync(dirname(filePath), { recursive: true });
 
 const contents = `// Imports
 
-export const ${name} = undefined;
+export const ${name} = undefined; // TODO: the single shared instance
 `;
 
 writeFileSync(filePath, contents);

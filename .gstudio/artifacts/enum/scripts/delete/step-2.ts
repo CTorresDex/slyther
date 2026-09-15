@@ -1,16 +1,14 @@
+export {};
+
 import * as fs from "fs";
 import * as path from "path";
 
-function toPascalCase(id: string): string {
-    return id
+function toPascalCase(input: string): string {
+    return input
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
         .split(/[^a-zA-Z0-9]+/)
         .filter(Boolean)
-        .map((word) => {
-            if (/^[A-Z0-9]/.test(word) && word === word.toUpperCase()) {
-                return word.charAt(0) + word.slice(1).toLowerCase();
-            }
-            return word.charAt(0).toUpperCase() + word.slice(1);
-        })
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
         .join("");
 }
 
@@ -23,15 +21,22 @@ function main(): void {
     }
 
     const name = toPascalCase(id);
-    const filePath = path.join("src", "enums", `${name}.enum.ts`);
+
+    if (!name) {
+        console.error(`Error: could not derive a valid PascalCase name from "${id}".`);
+        process.exit(1);
+    }
+
+    const dir = path.join("src", "src", "enums");
+    const filePath = path.join(dir, `${name}.enum.ts`);
 
     if (!fs.existsSync(filePath)) {
-        console.error(`Error: enum "${id}" does not exist at ${filePath}.`);
+        console.error(`Error: enum does not exist at ${filePath}.`);
         process.exit(1);
     }
 
     fs.unlinkSync(filePath);
-    console.log(`Removed enum "${id}" at ${filePath}.`);
+    console.log(`Deleted ${filePath}`);
 }
 
 main();
