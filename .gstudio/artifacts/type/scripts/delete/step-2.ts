@@ -1,0 +1,35 @@
+import { existsSync, unlinkSync } from "fs";
+import { join } from "path";
+
+function toPascalCase(id: string): string {
+  return id
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((word) =>
+      word
+        .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join("")
+    )
+    .join("");
+}
+
+const id = process.argv[2];
+
+if (!id) {
+  console.error("Usage: step-2.ts <id>");
+  process.exit(1);
+}
+
+const name = toPascalCase(id);
+const filePath = join("src", "types", `${name}.type.ts`);
+
+if (!existsSync(filePath)) {
+  console.error(`Type "${id}" does not exist at ${filePath}`);
+  process.exit(1);
+}
+
+unlinkSync(filePath);
+console.log(`Deleted ${filePath}`);
