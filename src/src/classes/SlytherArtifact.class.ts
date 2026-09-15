@@ -8,9 +8,10 @@ export class SlytherArtifact {
         readonly artifact: string,
         readonly name: string,
         readonly content: string,
+        readonly references: string[],
     ) {
         this.hash = createHash("sha256")
-            .update(`${artifact}\n${name}\n${content}`)
+            .update([artifact, name, content, references.join(",")].join("\n"))
             .digest("hex");
     }
 }

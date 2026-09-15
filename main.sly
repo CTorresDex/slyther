@@ -1,20 +1,21 @@
 class SlytherScript
 class SlytherArtifact {
-    Represents an instantiated artifact defined in an SlytherScript, contains:
+    Represents an instantiated artifact defined in an #{SlytherScript}, contains:
 
     - artifact: The kind of the artifact, ex. class, function, etc...
     - name: The name of the artifact to be created
     - content: The prose written inside the artifact
+    - references: `kind:name` of the references found in the artifact prose, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error
     - hash: The hash of all the fields above
 }
 
 class ParsedSlytherScript {
     Represents a parsed SlytherScript, contains:
 
-    - artifacts: A list of SlytherArtifacts that were parsed from the SlytherScript
+    - artifacts: A list of #{SlytherArtifact} that were parsed from the #{SlytherScript}
 }
 
 class SlytherParser {
-    Reads a SlytherScript and returns a ParsedSlytherScript
+    Reads a #{SlytherScript} and returns a #{ParsedSlytherScript}
 }
 
