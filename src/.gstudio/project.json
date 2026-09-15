@@ -1,0 +1,29 @@
+{
+    "template": {
+        "name": "ts",
+        "version": "0.1.0",
+        "url": "/Users/theagent/src/gstudio-templates/ts",
+        "ref": null,
+        "sha": null,
+        "linked": true
+    },
+    "features": {
+        "std": {
+            "explicit": true,
+            "requires": [],
+            "version": "0.1.0",
+            "url": "/Users/theagent/src/gstudio-templates/ts",
+            "ref": null,
+            "sha": null,
+            "linked": true,
+            "files": {},
+            "artifacts": {
+                "class": "ee2366b4aca7860cbd623797fdf86e37eac9a3827718c4ca3d42f13e5ccdca80",
+                "enum": "434de1b627fe59315d22e643014cd57150c9a1f9b01989618e9fbdfda9a145c3",
+                "function": "48059ee1330b00970413fc05f1973624fb6d82291bd48faeadb75491eb609413",
+                "singleton": "e600c46b92e5d37b3ae152467f5b952a39122d1f950e6b7defe92f149fc2979d",
+                "type": "f5b62735f756ee1f678928a47b9ecc3b9222baed9fd530267fc934267956c740"
+            }
+        }
+    }
+}

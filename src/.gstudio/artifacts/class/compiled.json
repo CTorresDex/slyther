@@ -1,0 +1,50 @@
+{
+    "steps": {
+        ".gstudio/artifacts/class/scripts/create/step-2.ts": {
+            "hash": "28cea1bcdabfb2355ff8e6227ee359fa1079dccb704007f164e063a946de0b96",
+            "instruction": "Run {{script}} <id> to scaffold the class, where <id> is the class identifier (e.g. kebab-case or camelCase) to convert to PascalCase for the generated file."
+        },
+        ".gstudio/artifacts/class/scripts/list/step-2.ts": {
+            "hash": "476ee876ed0e1496932c6d4bfb918e030c25581b679faeee286c1085081774fa",
+            "instruction": "Run {{script}} [searchTerm] to list all classes (optionally filtered to those whose file contents include searchTerm)."
+        },
+        ".gstudio/artifacts/class/scripts/update/step-2.ts": {
+            "hash": "0d01f8cb995674342d435787671c8ea94b0f9bb625eeeb3981bd900b5dacf55a",
+            "instruction": "Run the script as `{{script}} <id> <change-request>`, where `<id>` is the class identifier to check and `<change-request>` is the requested change (unused by this step but accepted as input)."
+        },
+        ".gstudio/artifacts/class/scripts/delete/step-2.ts": {
+            "hash": "2af42a4ceed02e187acd813c9fefec90add999154b03425466de9f2e7cd9b2fc",
+            "instruction": "Run {{script}} <id> where <id> is the class identifier to delete."
+        },
+        ".gstudio/artifacts/class/scripts/delete/step-3.sh": {
+            "hash": "6f5bd69b0b899cd92fff63e647b6a642301cbb488193cdafc9eeedb835897a89",
+            "instruction": "Run `{{script}} <id>` where `<id>` is the class id, to print every existing reference to that class in the codebase as `[file path]:[line number]` lines."
+        },
+        ".gstudio/artifacts/class/scripts/evaluate/step-2.ts": {
+            "hash": "4aeca0539bc07467019ac0df371ef6e48c684e19ea47de006552ea9590d76958",
+            "instruction": "Run `{{script}} <id>` where `<id>` is the class identifier to evaluate against `src/classes/{PascalCaseId}.class.ts`."
+        }
+    },
+    "descriptions": {
+        "create": {
+            "hash": "7c2feee8231f3802c19353647b3e8ae681a393d75e9865736b41fe69040d5177",
+            "text": "Scaffolds a new class file at src/classes/{Name}.class.ts given a class id and optional initial content, failing if it already exists."
+        },
+        "list": {
+            "hash": "9858878e0de2b07905effed496019fc688bf3278ef950ca90e7edc1373d6d920",
+            "text": "Lists classes defined under src/classes whose id or path matches an optional search term, printing each as id: file path."
+        },
+        "update": {
+            "hash": "f4f89113509cfcfbb4772d0e42e7a06527e89c5dd2e2292e4f5a28ac3dff4899",
+            "text": "Modifies an existing class file at src/classes/{name}.class.ts to satisfy a given change request, erroring if the class does not exist."
+        },
+        "delete": {
+            "hash": "37bb4edc143f526a2614f850bc451ab27c0fee71339e41f18de57b17ab784341",
+            "text": "Deletes a class file by id from src/classes, then finds and removes all dangling references to it in the codebase."
+        },
+        "evaluate": {
+            "hash": "b3536711b84062c619c33c38310de75dee57bc555dd97e039c4fba141dd83456",
+            "text": "Checks that a class file matches the required location, shape, and scoping rules for a given class id, printing discrepancies as ERROR_CODE: message and exiting nonzero if any are found."
+        }
+    }
+}
