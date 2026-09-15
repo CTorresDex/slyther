@@ -1,6 +1,7 @@
 // Imports
 import { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 import { SlytherArtifact } from "./SlytherArtifact.class.ts";
+import { SlytherClosureHasher } from "./SlytherClosureHasher.class.ts";
 import type { SlytherScript } from "./SlytherScript.class.ts";
 
 export class SlytherParser {
@@ -21,7 +22,7 @@ export class SlytherParser {
                 ),
         );
 
-        return new ParsedSlytherScript(artifacts);
+        return new ParsedSlytherScript(artifacts, new SlytherClosureHasher().hash(artifacts));
     }
 
     private scan(source: string): Map<string, { artifact: string; content: string }> {

@@ -11,7 +11,7 @@ export class SlytherArtifact {
         readonly references: string[],
     ) {
         this.hash = createHash("sha256")
-            .update([artifact, name, content, references.join(",")].join("\n"))
+            .update([artifact, name, content].join("\n"))
             .digest("hex");
     }
 }

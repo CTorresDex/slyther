@@ -6,16 +6,26 @@ class SlytherArtifact {
     - name: The name of the artifact to be created
     - content: The prose written inside the artifact
     - references: `kind:name` of the references found in the artifact prose, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error
-    - hash: The hash of all the fields above
+    - hash: The hash of the artifact, the name and the content
+}
+
+class SlytherClosureHasher {
+    Computes the closure hash of every #{SlytherArtifact} of a list, keyed by `kind:name`.
+
+    The closure hash of an artifact covers its own hash and, transitively, the hash of everything it
+    references, so it changes whenever any artifact it depends on changes.
+
+    It is cycle tolerant: mutually referencing artifacts are hashed as a single group, and each member
+    of the group mixes its own hash into the group's, so members of a cycle keep distinct closure hashes.
 }
 
 class ParsedSlytherScript {
     Represents a parsed SlytherScript, contains:
 
     - artifacts: A list of #{SlytherArtifact} that were parsed from the #{SlytherScript}
+    - closureHashes: The closure hash of every artifact, keyed by `kind:name`, as computed by #{SlytherClosureHasher}
 }
 
 class SlytherParser {
     Reads a #{SlytherScript} and returns a #{ParsedSlytherScript}
 }
-
