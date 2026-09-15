@@ -1,8 +1,0 @@
-{
-    "steps": {
-        ".gstudio/features/std/scripts/requires/step-1.sh": {
-            "hash": "2d8c6451d5420f689d0c657d8f4661969e02ff2b94efa3de5eb9488aa0cb6d7f",
-            "instruction": "Run {{script}} from the project root with no arguments."
-        }
-    }
-}
