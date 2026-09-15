@@ -1,0 +1,50 @@
+{
+    "steps": {
+        ".gstudio/artifacts/command/scripts/create/step-2.sh": {
+            "hash": "00cfffa4c64b9b9b0f42cdd180699c0ce881addfd8fae1d95f21568adc84d239",
+            "instruction": "Run {{script}} <path> [content], where <path> is the slash-separated command path (e.g. create/artifact) and the optional [content] is the full file content to use instead of the default scaffold."
+        },
+        ".gstudio/artifacts/command/scripts/list/step-2.sh": {
+            "hash": "60b14e1aaea80717eb6fb3b731f42897566b811404bac48b47467346ecba6aa7",
+            "instruction": "Run {{script}} [search-term] to list every command file under src/src/commands, optionally restricted to those whose content contains search-term, one per line as `[command path]: [file path]`."
+        },
+        ".gstudio/artifacts/command/scripts/update/step-2.sh": {
+            "hash": "49ec840f98e86392365824a759cd96509d38fc27c09743a258295bec8d21dfa0",
+            "instruction": "Run {{script}} <command-path> <change-request>, where <command-path> is the slash-separated command path (e.g. create/artifact) and <change-request> is ignored by this step."
+        },
+        ".gstudio/artifacts/command/scripts/delete/step-2.sh": {
+            "hash": "bdbd72c0f11ee6fb958cc5542ccca6e6227f8650c006d202c39435f610f12883",
+            "instruction": "Run {{script}} <path> where <path> is the slash-separated command path (e.g. create/artifact)."
+        },
+        ".gstudio/artifacts/command/scripts/delete/step-3.sh": {
+            "hash": "1a39523be73d2d1865bd26ad0dd6e651093127d5667b7660802424465f780d14",
+            "instruction": "Run {{script}} <path>, where <path> is the command's slash-separated path (e.g. create/artifact) written exactly as it appears in its file location."
+        },
+        ".gstudio/artifacts/command/scripts/evaluate/step-2.sh": {
+            "hash": "ffa3c0f4dbd7619faa1baf1d44eece85f24e8082947d8caa0bed91fc145faa81",
+            "instruction": "Run {{script}} <path> where <path> is the command's slash-separated path exactly as it appears in its file location (e.g. `create/artifact`), with no quoting needed."
+        }
+    },
+    "descriptions": {
+        "create": {
+            "hash": "12299d10d18ebf060a474aec98e4bf241f3febbcb462ab5bccc6714beda775bd",
+            "text": "Scaffolds the command file at src/src/commands/create/artifact.command.ts given a command path and optional content, exiting 1 if it already exists."
+        },
+        "list": {
+            "hash": "f8ed4b02cef8becca1977c352e859b6615d13da09c4fde94fcc34e8d3924b513",
+            "text": "Lists command artifacts in the codebase matching an optional search term, printing each as [command path]: [file path]"
+        },
+        "update": {
+            "hash": "6663408fa73b8a327cdd7b9656dc66099d1cac26d16558efdb56c3d1e01b0538",
+            "text": "Updates an existing command artifact's source file to satisfy a natural-language change request, given its command path, erroring if the command doesn't exist."
+        },
+        "delete": {
+            "hash": "2cf62e88a534c0d741fb087ae307fc40e80c03c5040c01c027dd2a1e534f5161",
+            "text": "Deletes the command artifact with the given command path, removing its file and cleaning up dangling references to it across the codebase."
+        },
+        "evaluate": {
+            "hash": "32ffd97f12adad48275c651753a5e80556ebd2a6bb9ee2427e8765ffa0fe62e1",
+            "text": "Checks that a command artifact's file structure, Progress usage, and input handling comply with the artifact rules, given its command path, printing pass or itemized rule violations."
+        }
+    }
+}

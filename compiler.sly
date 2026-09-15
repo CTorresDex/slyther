@@ -1,0 +1,57 @@
+@use Compiler
+
+class SlytherScript {
+    Wraps a string, represents the source code of a SlytherScript
+}
+
+class SlytherArtifact {
+    Represents an instantiated artifact defined in an #{SlytherScript}, contains:
+
+    - artifact: The kind of the artifact, ex. class, function, etc...
+    - name: The name of the artifact to be created, optionally qualified as `Parent::child` to declare it
+      inside another artifact; the parent must be declared too, otherwise it must throw an error
+    - args: The arguments declared between parens after the name, as `name: value` pairs, in the order written.
+      Each value is parsed by the way it is written: quoted is a string, digits are a number, true and false are a
+      boolean, and a bare symbol is a type, which must be a declared artifact, otherwise it must throw an error
+    - content: The prose written inside the artifact
+    - references: `kind:name` of the references found in the artifact prose and of the types of its args, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error
+    - hash: The hash of the artifact, the name, the args and the content
+}
+
+class SlytherClosureHasher {
+    Computes the closure hash of every #{SlytherArtifact} of a list, keyed by `kind:name`.
+
+    The closure hash of an artifact covers its own hash and, transitively, the hash of everything it
+    references, so it changes whenever any artifact it depends on changes. A `Parent::child` name is a
+    dependency of its parent as well, so a parent changes whenever one of its children changes.
+
+    It is cycle tolerant: mutually referencing artifacts are hashed as a single group, and each member
+    of the group mixes its own hash into the group's, so members of a cycle keep distinct closure hashes.
+}
+
+class ParsedSlytherScript {
+    Represents a parsed SlytherScript, contains:
+
+    - artifacts: A list of #{SlytherArtifact} that were parsed from the #{SlytherScript}
+    - closureHashes: The closure hash of every artifact, keyed by `kind:name`, as computed by #{SlytherClosureHasher}
+}
+
+class SlytherParser {
+    Reads a #{SlytherScript} and returns a #{ParsedSlytherScript}
+
+    A `@use Name` line opens a namespace: every artifact declared below it is named `Name::artifact`, and
+    the namespace itself is declared as an artifact of kind namespace if it was not declared before. A
+    reference or an arg type written inside a namespace resolves in that namespace first and falls back
+    to the global scope.
+
+    An `@import "path"` line parses another script and adds its artifacts to this one. The path is
+    resolved relative to the importing script. An artifact keeps the namespace of the script that
+    declares it, so importing never re-homes it, and a script is only read once no matter how many
+    times it is imported, so scripts may import each other.
+
+    An `@artifact Name` line declares an artifact kind and is the only way to make it available: a
+    declaration of a kind that was not declared before it must throw an error. Only artifact and
+    namespace are built in.
+
+    Declaring the same name twice in the same scope must throw an error.
+}
