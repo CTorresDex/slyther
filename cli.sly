@@ -16,3 +16,7 @@ command kinds {
 command init {
     Initializes a #{Project::SlytherProject} in the current directory
 }
+
+command build {
+    Builds the current #{Project::SlytherProject}
+}

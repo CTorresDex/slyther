@@ -1,12 +1,17 @@
 // Imports
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
+import { SlytherParser } from "./SlytherParser.class.ts";
+import { SlytherScript } from "./SlytherScript.class.ts";
 
 export class SlytherProject {
     /** The entry point of a project, relative to its root. */
     static readonly MAIN = "main.sly";
     /** Where the Slyther output files live, relative to the root. */
     static readonly OUTPUT = ".slyther";
+    /** Where the build writes its files, relative to the output folder. */
+    static readonly BUILD = "build";
 
     constructor(
         /** The folder the slyther files live in. */
@@ -21,6 +26,27 @@ export class SlytherProject {
     /** The path of the folder of output files. */
     get output(): string {
         return join(this.root, SlytherProject.OUTPUT);
+    }
+
+    /** The path of the folder the build writes to. */
+    get buildDir(): string {
+        return join(this.output, SlytherProject.BUILD);
+    }
+
+    /** Builds the project, returning the paths it wrote. */
+    async build(): Promise<string[]> {
+        return [(await this.parse()).path];
+    }
+
+    /** Parses the entry point and writes its JSON representation to the build folder as parser.json. */
+    async parse(): Promise<{ parsed: ParsedSlytherScript; path: string }> {
+        const parsed = new SlytherParser().parse(await SlytherScript.of(this.main));
+        const path = join(this.buildDir, "parser.json");
+
+        await mkdir(this.buildDir, { recursive: true });
+        await writeFile(path, JSON.stringify(parsed, null, 4));
+
+        return { parsed, path };
     }
 
     /**

@@ -1,3 +1,4 @@
+@import "./compiler.sly"
 @use Project
 
 class SlytherProject {
@@ -5,4 +6,14 @@ class SlytherProject {
 
     - main.sly: Entry point
     - .slyther: Contains the Slyther output files
+    - .slyther/build
+    - .slyther/build/parser.json: The JSON representation of the SlytherScript parsed from main.sly
+}
+
+method SlytherProject::build {
+    
+}
+
+method SlytherProject::parse {
+    Uses ${Compiler::SlytherParser} to parse the main.sly file and writes the JSON representation to: .slyther/build/parser.json
 }
