@@ -29,6 +29,22 @@ class SlytherClosureHasher {
     of the group mixes its own hash into the group's, so members of a cycle keep distinct closure hashes.
 }
 
+class SlytherArtifactKind {
+    A kind of artifact, as defined by an `@artifact` block of a #{ParsedSlytherScript}, contains:
+
+    - artifact: The #{SlytherArtifact} of the kind itself, whose content is the rules of the kind
+    - closureHash: The closure hash of the kind, so it changes whenever its rules or any of its operations do
+    - operations: Every operation of the kind in the order written, each with its #{SlytherArtifact},
+      its closure hash and its steps, and each step with its #{SlytherArtifact} and its closure hash.
+      A step is of kind llm or deterministic
+
+    Its static `of` groups the artifacts of a #{ParsedSlytherScript} into kinds and must throw an
+    error when an operation is not declared inside a kind, when a step is not declared inside an
+    operation, when an operation has no steps, or when a kind has a create or update operation but no
+    evaluate operation to verify them with. A kind with no operations is allowed: it is declared but
+    not yet defined.
+}
+
 class ParsedSlytherScript {
     Represents a parsed SlytherScript, contains:
 
@@ -68,5 +84,45 @@ class SlytherParser {
     prose with the backslash removed. A line that opens a block of a known kind where its owner may
     not contain it must throw an error, as must text after the brace that closes a block.
 
+    The content of an artifact is the prose of its body without the indentation its lines share and
+    without the blank lines around it, so it reads the same wherever it is written back.
+
     Declaring the same name twice in the same scope must throw an error.
+}
+
+class ClaudeCLI {
+    Asks the Claude CLI a prompt in print mode, with every tool disabled and no session kept, and
+    returns the text of its reply, or the reply parsed as a JSON object even when wrapped in a code
+    fence. The prompt is handed over stdin. Takes the model to ask, or leaves the CLI to its default.
+    Must throw an error when the CLI cannot answer.
+}
+
+class SlytherManifest {
+    Keeps what a compilation generated, at `.slyther/compiled.json`: by section and key, the hash the
+    text was generated from and the text itself, so the #{SlytherCompiler} asks again only when the
+    hash changed. Loads an empty manifest when there is none, forgets the keys of a section that are
+    no longer compiled, and saves itself sorted.
+}
+
+class SlytherSkill {
+    Renders the SKILL.md of one operation of a #{SlytherArtifactKind}: its name is `{operation}-{kind}`,
+    its frontmatter carries the description, then the rules of the kind and the numbered steps, an llm
+    step by its prose and a deterministic one by the instruction telling how to run its script. The
+    skill of a create or update operation ends with an evaluation loop that runs the steps of the
+    evaluate operation and repeats until every deterministic step exits 0.
+}
+
+class SlytherCompiler {
+    Compiles a list of #{SlytherArtifactKind} into scripts and skills, relative to the project root.
+
+    Every deterministic step becomes a script at `.slyther/artifacts/{kind}/{operation}/{step}.{lang}`,
+    where lang is the `lang` arg of the step, sh by default, written by the #{ClaudeCLI} from the rules
+    of the kind and the prose of the step together with an instruction telling how to run it. Every
+    operation is given a one sentence description by the #{ClaudeCLI}, and its #{SlytherSkill} is written
+    to `.claude/skills` and `.codex/skills`.
+
+    A script is asked for again only when the rules of its kind or the closure hash of its step changed,
+    a description only when the rules or the closure hash of its operation changed, as remembered by
+    the #{SlytherManifest}. Skills are always rendered again, they cost nothing. Kinds without
+    operations are left alone. It reports every file it settles as it goes.
 }

@@ -214,7 +214,7 @@ export class SlytherParser {
 
                         body.push(line.slice(0, closed.at));
 
-                        return { content: body.join("\n").trim(), end: index };
+                        return { content: this.dedent(body), end: index };
                     }
 
                     depth = closed.depth;
@@ -229,6 +229,18 @@ export class SlytherParser {
 
             line = lines[index]!;
         }
+    }
+
+    /** The lines of a body without the indentation they share and without the blank lines around them. */
+    private dedent(lines: string[]): string {
+        const indent = Math.min(
+            ...lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length),
+        );
+
+        return lines
+            .map((line) => (line.trim() ? line.slice(indent) : ""))
+            .join("\n")
+            .trim();
     }
 
     /** Counts the braces of a line outside inline code, and where the brace that closes the block is, if any. */
