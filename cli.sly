@@ -1,3 +1,4 @@
+@import "./project.sly"
 @use Compiler
 
 command parse {
@@ -10,4 +11,8 @@ command kinds {
     Input: input file
 
     Parses the input file and prints the JSON representation of every #{SlytherArtifactKind} it defines
+}
+
+command init {
+    Initializes a #{Project::SlytherProject} in the current directory
 }

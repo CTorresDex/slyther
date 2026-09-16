@@ -1,0 +1,8 @@
+@use Project
+
+class SlytherProject {
+    A Slyther project is a folder where the slyther files live, contains the following structure:
+
+    - main.sly: Entry point
+    - .slyther: Contains the Slyther output files
+}
