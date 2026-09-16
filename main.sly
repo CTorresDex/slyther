@@ -1,5 +1,6 @@
 @artifact class
 @artifact command
+@artifact method
 
 @import "./compiler.sly"
 @import "./cli.sly"
