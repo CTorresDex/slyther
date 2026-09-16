@@ -5,4 +5,5 @@
 @artifact method
 
 @import "./compiler.sly"
+@import "./build.sly"
 @import "./cli.sly"

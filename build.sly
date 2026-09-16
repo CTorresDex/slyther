@@ -1,0 +1,71 @@
+@import "./compiler.sly"
+@use Build
+
+class ProcessUtils {
+    Runs a command, given as the words of its command line, with an optional working directory and an
+    optional text handed over stdin, and returns its exit code, its stdout and its stderr once it exits.
+    A command that cannot be spawned returns exit code 127 and the reason as its stderr.
+}
+
+class SlytherRuntime {
+    How a deterministic step of a given lang is run, checked and installed. It is created with the lang and
+    the folder the artifacts are built into, and throws when the lang is not one it knows. The langs are:
+
+    - ts: run with `bun`, checked with `bun build --no-bundle`, dependencies in a package.json installed with
+      `bun install`, ignoring node_modules
+    - py: run with the python of the `.venv` of the artifacts folder, checked with `py_compile`, dependencies in
+      a requirements.txt installed with `pip` into the `.venv`, which is created when missing, ignoring `.venv`
+    - sh: run with `sh`, checked with `sh -n`, no dependencies
+
+    Every command it returns has its paths relative to the root of the project, since that is where every
+    step runs: a step prints paths relative to the root, so its working directory is the root.
+
+    It gives the extension of a script of the lang, the command that runs a script, the command that checks
+    its syntax, the file that declares the dependencies of every step of the lang, as a name and a content
+    built from a `name: version` map, and the command that installs them, if the lang has any.
+}
+
+class SlytherGenerator {
+    What writes the scripts and the markdown a step needs, as an abstract class every backend implements
+    with two primitives: `ask`, which sends a prompt and returns a JSON reply that matches a schema, along
+    with a session that a later `ask` may resume so a fix continues the same conversation, and `execute`,
+    which runs a prompt with the tools to read and edit the project, for the llm steps of an operation.
+
+    On top of them it defines `generate`, which takes a #{SlytherGenerationTask} and returns the files it
+    asked for, the dependencies they declare and the session, and `fix`, which resumes the session with the
+    reason the files failed and returns them corrected. Both throw when a reply lacks an expected file or
+    adds one that was not asked for.
+}
+
+class SlytherGenerationTask {
+    What a #{SlytherGenerator} is asked to write, contains:
+
+    - instructions: The prose of what to write: the rules of the kind, the operation, the step, its params
+      and its lang, and the conventions every script follows
+    - context: The files the generator may need to read, each with its path and its content, gathered by
+      Slyther beforehand so the build never depends on what a backend chooses to explore
+    - expected: The paths of the files the reply must contain, relative to the root of the project
+    - dependencies: The `name: version` map of what is already installed for the lang, so the reply
+      reuses it instead of adding another version or another package that does the same
+}
+
+class ClaudeCLIGenerator {
+    A #{SlytherGenerator} backed by the Claude Code CLI, `claude` unless the SLYTHER_CLAUDE environment
+    variable names another executable. `ask` runs it in print mode with every tool disabled, the prompt
+    on stdin, the JSON output format and the schema as its structured output, resuming the session when
+    given one, and returns the structured output and the session id of the reply. `execute` runs it in
+    print mode in the given directory with the tools to read, search and edit files and to run commands
+    allowed, and returns the text of the reply. Either throws when the CLI does not reply, or replies with
+    an error.
+}
+
+class SlytherVerifier {
+    Checks that the script written for a deterministic step works before it is recorded as built, and
+    returns why it does not, or nothing when it does. It is created with the root of the project.
+
+    Every script is checked for syntax with the command of its #{SlytherRuntime}. The scripts of the
+    read-only operations, locate, list, signature and uses, are also run, since running them changes
+    nothing: list with no args must exit 0, and the others must exit 0 or 1 given the first id list
+    prints, or a sample id when it prints none. When signature exits 0, every line it prints must have
+    the `key shape` form, and when uses exits 0, every line must have the `kind:id key` form.
+}
