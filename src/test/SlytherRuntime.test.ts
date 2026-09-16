@@ -26,7 +26,7 @@ describe("SlytherRuntime", () => {
         expect(runtime.check("x.py")).toEqual([".slyther/artifacts/.venv/bin/python", "-m", "py_compile", "x.py"]);
         expect(runtime.dependencies({ black: "24.1.0", ruff: "0.4.0" })).toBe("black==24.1.0\nruff==0.4.0\n");
         expect(runtime.install()![0]).toBe("sh");
-        expect(runtime.ignored).toEqual([".venv"]);
+        expect(runtime.ignored).toEqual([".venv", "__pycache__"]);
     });
 
     test("sh has no dependencies", () => {

@@ -15,6 +15,7 @@ class SlytherRuntime {
       `bun install`, ignoring node_modules
     - py: run with the python of the `.venv` of the artifacts folder, checked with `py_compile`, dependencies in
       a requirements.txt installed with `pip` into the `.venv`, which is created when missing, ignoring `.venv`
+      and the `__pycache__` folders compiling leaves next to the scripts
     - sh: run with `sh`, checked with `sh -n`, no dependencies
 
     Every command it returns has its paths relative to the root of the project, since that is where every

@@ -41,7 +41,7 @@ export class SlytherRuntime {
                 "-c",
                 `[ -d "${join(artifacts, ".venv")}" ] || python3 -m venv "${join(artifacts, ".venv")}"; "${SlytherRuntime.python(artifacts)}" -m pip install -q -r "${join(artifacts, "requirements.txt")}"`,
             ],
-            ignored: [".venv"],
+            ignored: [".venv", "__pycache__"],
         },
         sh: {
             extension: "sh",
