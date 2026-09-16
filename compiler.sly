@@ -76,7 +76,9 @@ class SlytherArtifactKind {
     The locate operation is how every other operation finds an artifact of the kind: given its id, it
     prints where the artifact is and exits 0, or prints nothing and exits 1 when it does not exist. An
     artifact may be spread over several files, so it prints one segment per line: a path, for a whole
-    file, or `path:start-end`, for the lines of a file from start to end, both inclusive and starting at 1.
+    file or a whole folder, or `path:start-end`, for the lines of a file from start to end, both inclusive
+    and starting at 1. A folder stands for its structure, what it holds directly, and not for the content
+    of its files: a kind that cares about some of them prints them as segments of their own.
 
     A kind with operations also has every #{SlytherBuiltinOperation}, added after the ones written,
     unless it declares an operation of the same name, which replaces the built-in one.

@@ -38,7 +38,7 @@ class FakeGenerator extends SlytherGenerator {
 
 /** Every instance is `src/<id>.txt`; its signature is the lines of `src/<id>.sig`, what it uses the lines of `src/<id>.uses`. */
 const SCRIPTS = {
-    "k/locate/locate.sh": '[ -f "src/$1.txt" ] || exit 1; if [ -f "src/$1.range" ]; then echo "src/$1.txt:$(cat src/$1.range)"; else echo "src/$1.txt"; fi',
+    "k/locate/locate.sh": '[ -d "src/$1" ] && echo "src/$1/" && exit 0; [ -f "src/$1.txt" ] || exit 1; if [ -f "src/$1.range" ]; then echo "src/$1.txt:$(cat src/$1.range)"; else echo "src/$1.txt"; fi',
     "k/list/list.sh": 'ls src/*.txt 2>/dev/null | sed "s|src/||; s|\\.txt$||"',
     "k/signature/signature.sh": '[ -f "src/$1.sig" ] || exit 1; cat "src/$1.sig"',
     "k/uses/uses.sh": '[ -f "src/$1.txt" ] || exit 1; [ -f "src/$1.uses" ] && cat "src/$1.uses"; exit 0',
@@ -96,6 +96,23 @@ describe("SlytherInstanceChecker", () => {
         await write("A.txt", "a changed\n");
 
         expect(statuses(await project().check())).toEqual(["k:A pass (its code changed)", "k:B kept"]);
+    });
+
+    test("a segment that is a folder is its listing, not the content of its files", async () => {
+        await writeFile(join(root, "main.sly"), `${SPEC()}\nk D { a folder }`);
+        await mkdir(join(root, "src", "D"));
+        await write("D/one.txt", "1\n");
+
+        expect(statuses(await project().check())).toContain("k:D pass (never evaluated)");
+        expect((await manifest())["k:D"].contentHash).toBe((await manifest())["k:D"].contentHash);
+
+        await write("D/one.txt", "changed\n");
+
+        expect(statuses(await project().check())).toContain("k:D kept");
+
+        await mkdir(join(root, "src", "D", "sub"));
+
+        expect(statuses(await project().check())).toContain("k:D pass (its code changed)");
     });
 
     test("ignores where a segment is, only what it holds", async () => {

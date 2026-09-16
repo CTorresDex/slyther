@@ -1,6 +1,6 @@
 // Imports
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ProcessUtils } from "./ProcessUtils.class.ts";
 import type { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
@@ -181,14 +181,8 @@ export class SlytherInstanceChecker {
 
         for (const line of SlytherInstanceChecker.linesOf(located.stdout)) {
             const [, path, start, end] = SlytherInstanceChecker.SEGMENT.exec(line)!;
-            const content = await readFile(join(this.root, path!), "utf-8").catch(() => {
-                throw new Error(`${key} is located at "${line}", which cannot be read.`);
-            });
 
-            segments.push({
-                path: path!,
-                content: start ? content.split("\n").slice(Number(start) - 1, Number(end)).join("\n") : content,
-            });
+            segments.push({ path: path!, content: await this.contentOf(key, line, path!, start, end) });
         }
 
         segments.sort((a, b) => a.path.localeCompare(b.path) || a.content.localeCompare(b.content));
@@ -202,6 +196,37 @@ export class SlytherInstanceChecker {
             signature: signature?.code === 0 ? SlytherInstanceChecker.linesOf(signature.stdout) : undefined,
             uses: uses?.code === 0 ? SlytherInstanceChecker.usesOf(uses.stdout) : undefined,
         };
+    }
+
+    /**
+     * What a segment holds: the lines of a file, or, for a folder, its listing, one entry per line with
+     * a slash after the folders, so a folder changes when its structure does and not when a file in it does.
+     */
+    private async contentOf(key: string, line: string, path: string, start?: string, end?: string): Promise<string> {
+        const target = join(this.root, path);
+        const isFolder = await stat(target).then(
+            (info) => info.isDirectory(),
+            () => {
+                throw new Error(`${key} is located at "${line}", which does not exist.`);
+            },
+        );
+
+        if (!isFolder) {
+            const content = await readFile(target, "utf-8");
+
+            return start ? content.split("\n").slice(Number(start) - 1, Number(end)).join("\n") : content;
+        }
+
+        if (start) {
+            throw new Error(`${key} is located at "${line}", but a folder has no lines.`);
+        }
+
+        const entries = await readdir(target, { withFileTypes: true });
+
+        return entries
+            .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+            .sort()
+            .join("\n");
     }
 
     /**

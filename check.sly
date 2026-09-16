@@ -7,7 +7,8 @@ class SlytherInstanceManifest {
     by `kind:name`, contains for each one:
 
     - contentHash: The hash of the segments locate prints, each as its path and its content, sorted, so
-      where a segment is never matters, only what it holds
+      where a segment is never matters, only what it holds. The content of a folder is its listing, one
+      entry per line with a slash after the folders, so it changes with its structure and not with its files
     - signature: The `key shape` lines signature printed, when the kind prints them
     - dependencies: For every instance it references, the content hash and the signature it had when
       this one was evaluated
