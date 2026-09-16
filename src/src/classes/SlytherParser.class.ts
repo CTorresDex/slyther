@@ -12,6 +12,7 @@ export class SlytherParser {
     private static readonly ARTIFACT =
         /^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?\s*(?:(\{)(.*))?$/;
     private static readonly IMPORT = /^\s*@import\s+["']([^"']+)["']\s*$/;
+    private static readonly LANG = /^\s*@lang\s+["']([^"']+)["']\s*$/;
     private static readonly USE = /^\s*@use\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*$/;
     /**
      * `kind name (args): qualifiers { tail`: the args, the qualifiers and the brace are optional, the
@@ -29,6 +30,8 @@ export class SlytherParser {
     private static readonly NUMBER = /^-?\d+(?:\.\d+)?$/;
     /** The kinds every script starts with. A kind itself is only declared through `@artifact`. */
     private static readonly BUILTIN = ["namespace", "operation", "llm", "deterministic"];
+    /** The types an arg may have without declaring anything. */
+    static readonly TYPES = ["string", "number", "boolean"];
     /** Which kinds may open a block inside the body of which kind. A kind absent here nests nothing. */
     private static readonly CONTAINS: Record<string, readonly string[]> = {
         artifact: ["operation"],
@@ -42,12 +45,14 @@ export class SlytherParser {
     private kinds = new Set<string>();
     private implicit = new Set<string>();
     private imported = new Set<string>();
+    private lang: string | undefined;
 
     parse(script: SlytherScript): ParsedSlytherScript {
         this.declarations = new Map();
         this.kinds = new Set(SlytherParser.BUILTIN);
         this.implicit = new Set();
         this.imported = script.path ? new Set([resolve(script.path)]) : new Set();
+        this.lang = undefined;
 
         this.scan(script.source, script.path);
 
@@ -66,7 +71,9 @@ export class SlytherParser {
             );
         });
 
-        return new ParsedSlytherScript(artifacts, new SlytherClosureHasher().hash(artifacts));
+        const hasher = new SlytherClosureHasher();
+
+        return new ParsedSlytherScript(artifacts, hasher.hash(artifacts), hasher.scope(artifacts), this.lang);
     }
 
     private scan(source: string, path: string): void {
@@ -79,6 +86,17 @@ export class SlytherParser {
 
             if (imported) {
                 this.import(imported[1]!, path);
+                continue;
+            }
+
+            const lang = SlytherParser.LANG.exec(line);
+
+            if (lang) {
+                if (this.lang !== undefined) {
+                    throw new Error(`The lang is declared twice: as "${this.lang}" and as "${lang[1]}".`);
+                }
+
+                this.lang = lang[1]!;
                 continue;
             }
 
@@ -332,7 +350,7 @@ export class SlytherParser {
         argument: string,
         owner: string,
         scope: string,
-    ): { kind: "string" | "number" | "boolean" | "type"; value: string | number | boolean } {
+    ): Omit<SlytherArtifact["args"][number], "name"> {
         const quote = value.charAt(0);
 
         if ((quote === '"' || quote === "'") && value.length > 1 && value.endsWith(quote)) {
@@ -347,22 +365,27 @@ export class SlytherParser {
             return { kind: "number", value: Number(value) };
         }
 
-        if (!SlytherParser.SYMBOL.test(value)) {
+        const optional = value.endsWith("?");
+        const type = optional ? value.slice(0, -1).trim() : value;
+
+        if (!SlytherParser.SYMBOL.test(type)) {
             throw new Error(`Malformed value "${value}" of argument "${argument}" of "${owner}".`);
         }
 
-        if (!this.resolve(value, scope)) {
-            throw new Error(`Unknown type "${value}" of argument "${argument}" of "${owner}".`);
+        if (!SlytherParser.TYPES.includes(type) && !this.resolve(type, scope)) {
+            throw new Error(`Unknown type "${type}" of argument "${argument}" of "${owner}".`);
         }
 
-        return { kind: "type", value };
+        return optional ? { kind: "type", value: type, optional } : { kind: "type", value: type };
     }
 
     private referencesOf(declaration: { content: string; scope: string }, args: SlytherArtifact["args"]): string[] {
         const prose = declaration.content.replace(SlytherParser.CODE, "");
         const written = [
             ...[...prose.matchAll(SlytherParser.REFERENCE)].map((match) => match[1]!),
-            ...args.filter((arg) => arg.kind === "type").map((arg) => String(arg.value)),
+            ...args
+                .filter((arg) => arg.kind === "type" && !SlytherParser.TYPES.includes(String(arg.value)))
+                .map((arg) => String(arg.value)),
         ];
 
         const references = written.map((name) => {

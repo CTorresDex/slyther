@@ -11,6 +11,8 @@ export class SlytherArtifact {
             name: string;
             kind: "string" | "number" | "boolean" | "type";
             value: string | number | boolean;
+            /** Only a type may be optional, written as `type?`. */
+            optional?: boolean;
         }[],
         readonly qualifiers: string[],
         readonly content: string,
@@ -21,7 +23,9 @@ export class SlytherArtifact {
                 [
                     artifact,
                     name,
-                    args.map((arg) => `${arg.name}=${arg.kind}:${String(arg.value)}`).join(","),
+                    args
+                        .map((arg) => `${arg.name}=${arg.kind}:${String(arg.value)}${arg.optional ? "?" : ""}`)
+                        .join(","),
                     qualifiers.join(","),
                     content,
                 ].join("\n"),

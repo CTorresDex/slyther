@@ -3,8 +3,8 @@ import { SlytherArtifactKind } from "../src/classes/SlytherArtifactKind.class.ts
 import { SlytherParser } from "../src/classes/SlytherParser.class.ts";
 import { SlytherScript } from "../src/classes/SlytherScript.class.ts";
 
-const kinds = (source: string) => SlytherArtifactKind.of(new SlytherParser().parse(new SlytherScript(source)));
-const LOCATE = "operation locate: deterministic { finds it }";
+const kinds = (source: string) => SlytherArtifactKind.of(new SlytherParser().parse(new SlytherScript(`@lang "ts"\n${source}`)));
+const LOCATE = "operation locate (id: string): deterministic { finds it }";
 
 describe("SlytherArtifactKind deterministic operations", () => {
     test("a deterministic operation without steps has its content as its only step", () => {

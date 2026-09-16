@@ -1,3 +1,5 @@
+@lang "ts"
+
 @artifact class
 @artifact command
 @artifact method

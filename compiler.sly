@@ -12,7 +12,9 @@ class SlytherArtifact {
       inside another artifact; the parent must be declared too, otherwise it must throw an error
     - args: The arguments declared between parens after the name, as `name: value` pairs, in the order written.
       Each value is parsed by the way it is written: quoted is a string, digits are a number, true and false are a
-      boolean, and a bare symbol is a type, which must be a declared artifact, otherwise it must throw an error
+      boolean, and a bare symbol is a type, which must be a built-in type or a declared artifact, otherwise it
+      must throw an error. The built-in types are string, number and boolean. A type followed by `?` is optional,
+      and anything else followed by `?` must throw an error
     - qualifiers: The qualifiers declared after a colon that follows the name and the args, as bare words separated
       by commas, in the order written. Writing the same qualifier twice must throw an error
     - content: The prose written inside the artifact
@@ -29,6 +31,10 @@ class SlytherClosureHasher {
 
     It is cycle tolerant: mutually referencing artifacts are hashed as a single group, and each member
     of the group mixes its own hash into the group's, so members of a cycle keep distinct closure hashes.
+
+    It also computes the scope hash of every artifact: the same closure but without the children, so it
+    covers the artifact and what it references, and stays the same when a child changes. A step is built
+    from the scope of its operation and of its kind, so editing a sibling step never rebuilds it.
 }
 
 class SlytherArtifactKind {
@@ -36,10 +42,22 @@ class SlytherArtifactKind {
 
     - artifact: The #{SlytherArtifact} of the kind itself, whose content is the rules of the kind
     - closureHash: The closure hash of the kind, so it changes whenever its rules or any of its operations do
+    - scopeHash: The scope hash of the kind, so it changes whenever its rules do but not when an operation does
+    - lang: The language of the kind, if its args declare one
     - operations: Every operation of the kind in the order written, each with its #{SlytherArtifact},
-      its closure hash and its steps, and each step with its #{SlytherArtifact} and its closure hash.
-      A step is of kind llm or deterministic
+      its closure hash, its scope hash, its params, whether it is deterministic, whether it is built in,
+      and its steps, and each step with its #{SlytherArtifact}, its closure hash and, when it is
+      deterministic, its lang. A step is of kind llm or deterministic
     - warnings: The warnings found while grouping the kind, in the order found
+
+    The args of an operation are its params: the signature it receives when it runs, as `name: type`
+    pairs, so every value must be a type, otherwise it must throw an error. A step declares no params,
+    it receives the params of its operation, and a type as a step arg must throw an error. The args of a
+    kind and of a step are configuration, and the only configuration is lang: any other must throw an
+    error, and so must lang on an llm step.
+
+    The lang of a deterministic step is the one its args declare, else the one of its kind, else the one
+    of the #{ParsedSlytherScript}, and when none declares it, it must throw an error.
 
     The only qualifier is deterministic, and only an operation may have it: any other qualifier, or a
     qualifier on anything else, must throw an error. A deterministic operation runs as a plain script and
@@ -52,11 +70,34 @@ class SlytherArtifactKind {
     error when an operation is not declared inside a kind, when a step is not declared inside an
     operation, when an operation that is not deterministic has no steps, or when a kind has a create
     or update operation but no evaluate operation to verify them with, or when a kind has operations
-    but no locate operation, or its locate operation is not deterministic. A kind with no operations is
-    allowed: it is declared but not yet defined.
+    but no locate operation, or its locate operation is not deterministic, or its params are not exactly
+    `(id: string)`. A kind with no operations is allowed: it is declared but not yet defined.
 
     The locate operation is how every other operation finds an artifact of the kind: given its id, it
-    prints where the artifact is and exits 0, or prints nothing and exits 1 when it does not exist.
+    prints where the artifact is and exits 0, or prints nothing and exits 1 when it does not exist. An
+    artifact may be spread over several files, so it prints one segment per line: a path, for a whole
+    file, or `path:start-end`, for the lines of a file from start to end, both inclusive and starting at 1.
+
+    A kind with operations also has every #{SlytherBuiltinOperation}, added after the ones written,
+    unless it declares an operation of the same name, which replaces the built-in one.
+}
+
+class SlytherBuiltinOperation {
+    A deterministic operation every kind with operations has without declaring it, so Slyther can
+    generate it from the rules of the kind. Each one is a #{SlytherArtifact} of kind operation named
+    `Kind::name` with the params, the deterministic qualifier and the content that follow, and no
+    references, so its closure hash and scope hash are its own hash. They are:
+
+    - list (): Prints the id of every artifact of the kind that exists, one per line, and exits 0
+    - signature (id: string): Prints the public shape of the artifact, one member per line as `key shape`,
+      where the key is the stable name of the member and the shape is its type or signature, without
+      bodies, private members or comments. Anything whose addition breaks the artifacts that use this one,
+      like a required constructor param, is printed as a change of an existing line and never as a new
+      line. Prints nothing and exits 1 when the artifact does not exist
+    - uses (id: string): Prints one line per artifact this one depends on, as `kind:id key` for every
+      member of it this artifact uses, as `kind:id *` when it uses it as a whole but does not depend on
+      the members it may gain, and as `kind:id **` when it depends on every member, including the ones
+      it may gain. Prints nothing and exits 1 when the artifact does not exist
 }
 
 class ParsedSlytherScript {
@@ -64,6 +105,8 @@ class ParsedSlytherScript {
 
     - artifacts: A list of #{SlytherArtifact} that were parsed from the #{SlytherScript}
     - closureHashes: The closure hash of every artifact, keyed by `kind:name`, as computed by #{SlytherClosureHasher}
+    - scopeHashes: The scope hash of every artifact, keyed by `kind:name`, as computed by #{SlytherClosureHasher}
+    - lang: The language declared by the `@lang` line, if any
 }
 
 class SlytherParser {
@@ -79,7 +122,10 @@ class SlytherParser {
     declares it, so importing never re-homes it, and a script is only read once no matter how many
     times it is imported, so scripts may import each other.
 
-    An `@artifact Name { rules }` line declares a kind, as an artifact of the built-in kind artifact,
+    An `@lang "name"` line declares the language of the project, the one a deterministic step is written
+    in when neither it nor its kind declares one. Writing it twice, in any script, must throw an error.
+
+    An `@artifact Name (args) { rules }` line declares a kind, as an artifact of the built-in kind artifact,
     and is the only way to make it available: a declaration of a kind that was not declared before it
     must throw an error, and so must writing a kind as a plain `artifact Name` declaration. The braces
     are optional, and a kind is always declared globally, whatever `@use` is in effect. The built-in

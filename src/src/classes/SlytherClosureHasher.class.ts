@@ -13,11 +13,21 @@ export class SlytherClosureHasher {
     private stacked = new Set<string>();
     private visited = 0;
 
+    /** The closure hash of every artifact: its own hash and, transitively, its references and children. */
     hash(artifacts: SlytherArtifact[]): Map<string, string> {
+        return this.compute(artifacts, true);
+    }
+
+    /** The scope hash of every artifact: the closure without the children, so a child never changes its parent. */
+    scope(artifacts: SlytherArtifact[]): Map<string, string> {
+        return this.compute(artifacts, false);
+    }
+
+    private compute(artifacts: SlytherArtifact[], withChildren: boolean): Map<string, string> {
         this.artifacts = new Map(
             artifacts.map((artifact) => [`${artifact.artifact}:${artifact.name}`, artifact]),
         );
-        this.children = this.childrenOf(this.artifacts);
+        this.children = withChildren ? this.childrenOf(this.artifacts) : new Map();
         this.indexes = new Map();
         this.lowLinks = new Map();
         this.groups = new Map();
