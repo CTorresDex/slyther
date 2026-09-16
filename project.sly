@@ -11,9 +11,14 @@ class SlytherProject {
 }
 
 method SlytherProject::build {
-    
+    Executes the #{SlytherProject::parse} method
+    Executes the #{SlytherProject::buildArtifacts} method
 }
 
 method SlytherProject::parse {
     Uses #{Compiler::SlytherParser} to parse the main.sly file and writes the JSON representation to: .slyther/build/parser.json
+}
+
+method SlytherProject::buildArtifacts {
+    Builds the operations of every #{Compiler::SlytherArtifactKind} of the project into .slyther/artifacts
 }

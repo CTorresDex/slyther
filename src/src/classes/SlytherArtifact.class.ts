@@ -12,6 +12,7 @@ export class SlytherArtifact {
             kind: "string" | "number" | "boolean" | "type";
             value: string | number | boolean;
         }[],
+        readonly qualifiers: string[],
         readonly content: string,
         readonly references: string[],
     ) {
@@ -21,6 +22,7 @@ export class SlytherArtifact {
                     artifact,
                     name,
                     args.map((arg) => `${arg.name}=${arg.kind}:${String(arg.value)}`).join(","),
+                    qualifiers.join(","),
                     content,
                 ].join("\n"),
             )

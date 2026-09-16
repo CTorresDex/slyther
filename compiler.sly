@@ -13,9 +13,11 @@ class SlytherArtifact {
     - args: The arguments declared between parens after the name, as `name: value` pairs, in the order written.
       Each value is parsed by the way it is written: quoted is a string, digits are a number, true and false are a
       boolean, and a bare symbol is a type, which must be a declared artifact, otherwise it must throw an error
+    - qualifiers: The qualifiers declared after a colon that follows the name and the args, as bare words separated
+      by commas, in the order written. Writing the same qualifier twice must throw an error
     - content: The prose written inside the artifact
     - references: `kind:name` of the references found in the artifact prose and of the types of its args, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error
-    - hash: The hash of the artifact, the name, the args and the content
+    - hash: The hash of the artifact, the name, the args, the qualifiers and the content
 }
 
 class SlytherClosureHasher {
@@ -37,12 +39,24 @@ class SlytherArtifactKind {
     - operations: Every operation of the kind in the order written, each with its #{SlytherArtifact},
       its closure hash and its steps, and each step with its #{SlytherArtifact} and its closure hash.
       A step is of kind llm or deterministic
+    - warnings: The warnings found while grouping the kind, in the order found
+
+    The only qualifier is deterministic, and only an operation may have it: any other qualifier, or a
+    qualifier on anything else, must throw an error. A deterministic operation runs as a plain script and
+    never with an llm, so it must throw an error when it contains an llm step, and when it has no steps its
+    content is its only step, a deterministic step named after the operation. An operation whose steps are
+    all deterministic but that is not qualified as deterministic is not inferred to be one: it adds a
+    warning suggesting the qualifier.
 
     Its static `of` groups the artifacts of a #{ParsedSlytherScript} into kinds and must throw an
     error when an operation is not declared inside a kind, when a step is not declared inside an
-    operation, when an operation has no steps, or when a kind has a create or update operation but no
-    evaluate operation to verify them with. A kind with no operations is allowed: it is declared but
-    not yet defined.
+    operation, when an operation that is not deterministic has no steps, or when a kind has a create
+    or update operation but no evaluate operation to verify them with, or when a kind has operations
+    but no locate operation, or its locate operation is not deterministic. A kind with no operations is
+    allowed: it is declared but not yet defined.
+
+    The locate operation is how every other operation finds an artifact of the kind: given its id, it
+    prints where the artifact is and exits 0, or prints nothing and exits 1 when it does not exist.
 }
 
 class ParsedSlytherScript {
@@ -79,9 +93,9 @@ class SlytherParser {
 
     Prose is told apart from a nested block by three rules: fenced and inline code is opaque, so
     nothing inside backticks opens, closes or references anything; a line only opens a block if it
-    has the shape `kind name (args) {` and the kind is one its owner may contain, any other line is
-    prose even if it ends in a brace; and a line starting with a backslash before such a shape is
-    prose with the backslash removed. A line that opens a block of a known kind where its owner may
+    has the shape `kind name (args): qualifiers {`, where the args and the qualifiers are optional,
+    and the kind is one its owner may contain, any other line is prose even if it ends in a brace; and
+    a line starting with a backslash before such a shape is prose with the backslash removed. A line that opens a block of a known kind where its owner may
     not contain it must throw an error, as must text after the brace that closes a block.
 
     The content of an artifact is the prose of its body without the indentation its lines share and

@@ -1,12 +1,17 @@
 // Imports
 import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
-import type { SlytherArtifact } from "./SlytherArtifact.class.ts";
+import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 
 export class SlytherArtifactKind {
     /** The kinds a step may be. */
     private static readonly STEPS = ["llm", "deterministic"];
     /** The operations that must be verified by an evaluate operation. */
     private static readonly VERIFIED = ["create", "update"];
+    /** The only qualifier, and only an operation may have it. */
+    private static readonly DETERMINISTIC = "deterministic";
+
+    /** The warnings found while grouping the kind, in the order found. */
+    readonly warnings: string[] = [];
 
     constructor(
         /** The `@artifact` declaration: its content is the rules of the kind. */
@@ -17,6 +22,8 @@ export class SlytherArtifactKind {
         readonly operations: {
             artifact: SlytherArtifact;
             closureHash: string;
+            /** Runs as a plain script and never with an llm. */
+            deterministic: boolean;
             steps: { artifact: SlytherArtifact; closureHash: string }[];
         }[],
     ) {}
@@ -29,6 +36,10 @@ export class SlytherArtifactKind {
         const kinds = new Map<string, SlytherArtifactKind>();
 
         for (const artifact of parsed.artifacts) {
+            if (artifact.artifact !== "operation") {
+                SlytherArtifactKind.checkQualifiers(artifact, []);
+            }
+
             if (artifact.artifact === "artifact") {
                 kinds.set(artifact.name, new SlytherArtifactKind(artifact, hashOf(artifact), []));
             }
@@ -42,7 +53,14 @@ export class SlytherArtifactKind {
                     throw new Error(`Operation "${artifact.name}" must be declared inside a kind.`);
                 }
 
-                kind.operations.push({ artifact, closureHash: hashOf(artifact), steps: [] });
+                SlytherArtifactKind.checkQualifiers(artifact, [SlytherArtifactKind.DETERMINISTIC]);
+
+                kind.operations.push({
+                    artifact,
+                    closureHash: hashOf(artifact),
+                    deterministic: artifact.qualifiers.includes(SlytherArtifactKind.DETERMINISTIC),
+                    steps: [],
+                });
             }
         }
 
@@ -85,8 +103,14 @@ export class SlytherArtifactKind {
 
     private check(): void {
         for (const operation of this.operations) {
-            if (operation.steps.length === 0) {
+            if (operation.deterministic) {
+                this.checkDeterministic(operation);
+            } else if (operation.steps.length === 0) {
                 throw new Error(`Operation "${operation.artifact.name}" has no steps.`);
+            } else if (operation.steps.every((step) => step.artifact.artifact === "deterministic")) {
+                this.warnings.push(
+                    `Operation "${operation.artifact.name}" has only deterministic steps: qualify it as deterministic.`,
+                );
             }
         }
 
@@ -95,6 +119,60 @@ export class SlytherArtifactKind {
         if (unverified.length > 0 && !this.operation("evaluate")) {
             throw new Error(
                 `Kind "${this.name}" defines ${unverified.join(" and ")} but no evaluate operation to verify ${unverified.length > 1 ? "them" : "it"} with.`,
+            );
+        }
+
+        const locate = this.operation("locate");
+
+        if (this.operations.length > 0 && !locate) {
+            throw new Error(`Kind "${this.name}" defines operations but no locate operation to find its artifacts with.`);
+        }
+
+        if (locate && !locate.deterministic) {
+            throw new Error(`Operation "${locate.artifact.name}" must be deterministic.`);
+        }
+    }
+
+    /**
+     * A deterministic operation never runs with an llm, so an llm step is an error, and when it has no
+     * steps its content is its only step: a deterministic step named after the operation, whose closure
+     * hash is the operation's, since that already covers the content.
+     */
+    private checkDeterministic(operation: SlytherArtifactKind["operations"][number]): void {
+        const llm = operation.steps.find((step) => step.artifact.artifact === "llm");
+
+        if (llm) {
+            throw new Error(
+                `Operation "${operation.artifact.name}" is deterministic but contains the llm step "${llm.artifact.name}".`,
+            );
+        }
+
+        if (operation.steps.length === 0) {
+            const { artifact } = operation;
+            const name = artifact.name.slice(artifact.name.lastIndexOf("::") + 2);
+
+            operation.steps.push({
+                artifact: new SlytherArtifact(
+                    "deterministic",
+                    `${artifact.name}::${name}`,
+                    [],
+                    [],
+                    artifact.content,
+                    artifact.references,
+                ),
+                closureHash: operation.closureHash,
+            });
+        }
+    }
+
+    private static checkQualifiers(artifact: SlytherArtifact, allowed: string[]): void {
+        const unknown = artifact.qualifiers.find((qualifier) => !allowed.includes(qualifier));
+
+        if (unknown) {
+            throw new Error(
+                allowed.length === 0
+                    ? `"${artifact.name}" cannot be qualified: only an operation may be, as deterministic.`
+                    : `Unknown qualifier "${unknown}" of "${artifact.name}": the only qualifier is deterministic.`,
             );
         }
     }

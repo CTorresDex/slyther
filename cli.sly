@@ -10,7 +10,7 @@ command parse {
 command kinds {
     Input: input file, defaults to main.sly
 
-    Parses the input file and prints the JSON representation of every #{SlytherArtifactKind} it defines
+    Parses the input file and prints the JSON representation of every #{SlytherArtifactKind} it defines, and prints its warnings to stderr
 }
 
 command init {
@@ -18,5 +18,5 @@ command init {
 }
 
 command build {
-    Builds the current #{Project::SlytherProject}
+    Builds the current #{Project::SlytherProject} using the #{Project::SlytherProject::build} method
 }

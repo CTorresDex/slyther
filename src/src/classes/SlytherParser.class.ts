@@ -8,14 +8,17 @@ import type { SlytherScript } from "./SlytherScript.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
 
 export class SlytherParser {
-    /** `@artifact Name (args) { tail`: declares a kind. The brace is optional, the tail is whatever follows it. */
+    /** `@artifact Name (args): qualifiers { tail`: declares a kind. The brace is optional, the tail is whatever follows it. */
     private static readonly ARTIFACT =
-        /^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?:(\{)(.*))?$/;
+        /^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?\s*(?:(\{)(.*))?$/;
     private static readonly IMPORT = /^\s*@import\s+["']([^"']+)["']\s*$/;
     private static readonly USE = /^\s*@use\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*$/;
-    /** `kind name (args) { tail`: the brace is optional, the tail is whatever follows it on the same line. */
+    /**
+     * `kind name (args): qualifiers { tail`: the args, the qualifiers and the brace are optional, the
+     * tail is whatever follows the brace on the same line.
+     */
     private static readonly DECLARATION =
-        /^\s*([A-Za-z_][\w-]*)\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*(?:\(([^)]*)\))?\s*(?:(\{)(.*))?$/;
+        /^\s*([A-Za-z_][\w-]*)\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?\s*(?:(\{)(.*))?$/;
     /** A line that would open a block but is meant as prose. */
     private static readonly ESCAPE = /^(\s*)\\(?=[A-Za-z_])/;
     private static readonly FENCE = /^\s*```/;
@@ -34,7 +37,7 @@ export class SlytherParser {
 
     private declarations = new Map<
         string,
-        { artifact: string; args: string; content: string; scope: string }
+        { artifact: string; args: string; qualifiers: string; content: string; scope: string }
     >();
     private kinds = new Set<string>();
     private implicit = new Set<string>();
@@ -57,6 +60,7 @@ export class SlytherParser {
                 declaration.artifact,
                 name,
                 args,
+                this.qualifiersOf(declaration, name),
                 declaration.content,
                 this.referencesOf(declaration, args),
             );
@@ -81,9 +85,9 @@ export class SlytherParser {
             const kind = SlytherParser.ARTIFACT.exec(line);
 
             if (kind) {
-                const [, name, args, open, tail] = kind;
+                const [, name, args, qualifiers, open, tail] = kind;
 
-                index = this.declareAt(lines, index, "artifact", name!, name!, "", args ?? "", open ? tail! : undefined);
+                index = this.declareAt(lines, index, "artifact", name!, name!, "", args ?? "", qualifiers ?? "", open ? tail! : undefined);
                 continue;
             }
 
@@ -96,6 +100,7 @@ export class SlytherParser {
                     this.declarations.set(scope, {
                         artifact: "namespace",
                         args: "",
+                        qualifiers: "",
                         content: "",
                         scope: "",
                     });
@@ -111,7 +116,7 @@ export class SlytherParser {
                 continue;
             }
 
-            const [, artifact, name, args, open, tail] = declaration;
+            const [, artifact, name, args, qualifiers, open, tail] = declaration;
             const qualified = scope ? `${scope}::${name}` : name!;
 
             if (artifact === "artifact") {
@@ -122,7 +127,7 @@ export class SlytherParser {
                 throw new Error(`Unknown artifact "${artifact}" of "${qualified}".`);
             }
 
-            index = this.declareAt(lines, index, artifact!, name!, qualified, scope, args ?? "", open ? tail! : undefined);
+            index = this.declareAt(lines, index, artifact!, name!, qualified, scope, args ?? "", qualifiers ?? "", open ? tail! : undefined);
         }
     }
 
@@ -138,9 +143,10 @@ export class SlytherParser {
         qualified: string,
         scope: string,
         args: string,
+        qualifiers: string,
         tail: string | undefined,
     ): number {
-        this.declare(qualified, artifact, scope, args);
+        this.declare(qualified, artifact, scope, args, qualifiers);
 
         if (artifact === "artifact") {
             this.kinds.add(name);
@@ -187,11 +193,11 @@ export class SlytherParser {
                 } else {
                     const nested = SlytherParser.DECLARATION.exec(line);
 
-                    if (nested?.[4]) {
-                        const [, child, name, args, , rest] = nested;
+                    if (nested?.[5]) {
+                        const [, child, name, args, qualifiers, , rest] = nested;
 
                         if (allowed.includes(child!)) {
-                            index = this.declareAt(lines, index, child!, name!, `${owner}::${name}`, owner, args ?? "", rest!);
+                            index = this.declareAt(lines, index, child!, name!, `${owner}::${name}`, owner, args ?? "", qualifiers ?? "", rest!);
 
                             if (++index >= lines.length) {
                                 throw new Error(`Unterminated ${artifact} "${owner}".`);
@@ -253,12 +259,12 @@ export class SlytherParser {
         return { depth, at: -1 };
     }
 
-    private declare(name: string, artifact: string, scope: string, args = "", content = ""): void {
+    private declare(name: string, artifact: string, scope: string, args = "", qualifiers = "", content = ""): void {
         if (this.declarations.has(name) && !this.implicit.delete(name)) {
             throw new Error(`Duplicate declaration "${name}".`);
         }
 
-        this.declarations.set(name, { artifact, args, content, scope });
+        this.declarations.set(name, { artifact, args, qualifiers, content, scope });
     }
 
     private import(target: string, path: string): void {
@@ -304,6 +310,21 @@ export class SlytherParser {
 
             return { name, ...this.valueOf(value, name, owner, declaration.scope) };
         });
+    }
+
+    /** The bare words after the colon, in the order written; writing one twice throws. */
+    private qualifiersOf(declaration: { qualifiers: string }, owner: string): string[] {
+        const qualifiers = declaration.qualifiers
+            .split(",")
+            .map((qualifier) => qualifier.trim())
+            .filter((qualifier) => qualifier.length > 0);
+        const repeated = qualifiers.find((qualifier, index) => qualifiers.indexOf(qualifier) !== index);
+
+        if (repeated) {
+            throw new Error(`Qualifier "${repeated}" is written twice on "${owner}".`);
+        }
+
+        return qualifiers;
     }
 
     private valueOf(
