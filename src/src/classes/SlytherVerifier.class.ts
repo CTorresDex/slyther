@@ -13,8 +13,8 @@ export class SlytherVerifier {
     private static readonly USES = /^[^\s:]+:\S+\s+\S+$/;
 
     constructor(
-        /** The root of the project, where every script runs. */
-        private readonly root: string,
+        /** The folder the code of the project lives in, where every script runs. */
+        private readonly cwd: string,
     ) {}
 
     /**
@@ -30,7 +30,7 @@ export class SlytherVerifier {
         list?: { script: string; runtime: SlytherRuntime };
         locate?: { script: string; runtime: SlytherRuntime };
     }): Promise<string | null> {
-        const check = await ProcessUtils.run(step.runtime.check(step.script), { cwd: this.root });
+        const check = await ProcessUtils.run(step.runtime.check(step.script), { cwd: this.cwd });
 
         if (check.code !== 0) {
             return `${step.script} does not pass the syntax check:\n${check.stderr || check.stdout}`;
@@ -41,7 +41,7 @@ export class SlytherVerifier {
         }
 
         if (step.operation === "list") {
-            const list = await ProcessUtils.run(step.runtime.run(step.script), { cwd: this.root });
+            const list = await ProcessUtils.run(step.runtime.run(step.script), { cwd: this.cwd });
 
             if (list.code !== 0) {
                 return `${step.script} must exit 0 but exited ${list.code}:\n${list.stderr}`;
@@ -53,7 +53,7 @@ export class SlytherVerifier {
                 return null;
             }
 
-            const located = await ProcessUtils.run([...step.locate.runtime.run(step.locate.script), id], { cwd: this.root });
+            const located = await ProcessUtils.run([...step.locate.runtime.run(step.locate.script), id], { cwd: this.cwd });
 
             return located.code === 0
                 ? null
@@ -61,7 +61,7 @@ export class SlytherVerifier {
         }
 
         const id = (await this.firstId(step.list)) ?? SlytherVerifier.SAMPLE;
-        const run = await ProcessUtils.run([...step.runtime.run(step.script), id], { cwd: this.root });
+        const run = await ProcessUtils.run([...step.runtime.run(step.script), id], { cwd: this.cwd });
 
         if (run.code !== 0 && run.code !== 1) {
             return `${step.script} must exit 0 or 1 given "${id}" but exited ${run.code}:\n${run.stderr}`;
@@ -87,7 +87,7 @@ export class SlytherVerifier {
             return undefined;
         }
 
-        const run = await ProcessUtils.run(list.runtime.run(list.script), { cwd: this.root });
+        const run = await ProcessUtils.run(list.runtime.run(list.script), { cwd: this.cwd });
 
         return run.code === 0 ? SlytherVerifier.linesOf(run.stdout)[0] : undefined;
     }

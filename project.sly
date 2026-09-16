@@ -6,6 +6,8 @@ class SlytherProject {
 
     - main.sly: Entry point
     - .slyther: Contains the Slyther output files
+    - .slyther/src: The code of the project. Every script, operation and LLM runs from it, so a `./` read by
+      the code is really `./.slyther/src`, and the paths the rules of a kind give are relative to it
     - .slyther/build
     - .slyther/build/parser.json: The JSON representation of the SlytherScript parsed from main.sly after a build
     - .slyther/artifacts: The operations of every kind as built, see #{Build::SlytherArtifactBuilder}
@@ -35,7 +37,7 @@ method SlytherProject::run {
     Runs an operation of a kind as built, given the kind, the operation and its args, which must fit the
     params of the operation, otherwise it must throw an error, as must an operation that is not built.
 
-    A deterministic operation runs the script of each of its steps in order from the root of the project,
+    A deterministic operation runs the script of each of its steps in order from .slyther/src,
     with the args as positional arguments, and stops at the first that exits with a code other than 0,
     returning that code. An operation that is not deterministic returns the markdown that orchestrates it
     with every `{param}` substituted by its arg, or, when a #{Build::SlytherGenerator} is given to execute

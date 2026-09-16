@@ -21,9 +21,9 @@ export class SlytherArtifactBuilder {
     private installed = new Map<string, string>();
 
     constructor(
-        /** The root of the project, where every script runs. */
-        private readonly root: string,
-        /** The folder the artifacts are built into, relative to the root. */
+        /** The folder the code of the project lives in, where every script runs. */
+        private readonly cwd: string,
+        /** The folder the artifacts are built into, relative to where the scripts run. */
         private readonly artifacts: string,
         private readonly generator: SlytherGenerator,
         private readonly options: { attempts?: number; log?: (line: string) => void } = {},
@@ -35,7 +35,7 @@ export class SlytherArtifactBuilder {
      * script cannot be made to pass verification.
      */
     async build(kinds: SlytherArtifactKind[]): Promise<{ path: string; status: "built" | "rebuilt" | "kept" | "removed" }[]> {
-        this.manifest = await SlytherArtifactManifest.load(join(this.root, this.artifacts, SlytherArtifactManifest.FILE));
+        this.manifest = await SlytherArtifactManifest.load(join(this.cwd, this.artifacts, SlytherArtifactManifest.FILE));
         this.installed = new Map();
 
         const desired = this.desiredOf(kinds);
@@ -43,8 +43,8 @@ export class SlytherArtifactBuilder {
 
         for (const path of Object.keys(this.manifest.files)) {
             if (!desired.some((entry) => entry.path === path)) {
-                await rm(join(this.root, this.artifacts, path), { force: true });
-                await this.prune(dirname(join(this.root, this.artifacts, path)));
+                await rm(join(this.cwd, this.artifacts, path), { force: true });
+                await this.prune(dirname(join(this.cwd, this.artifacts, path)));
                 delete this.manifest.files[path];
                 report.push({ path, status: "removed" });
             }
@@ -103,7 +103,7 @@ export class SlytherArtifactBuilder {
                     const runtime = step.lang ? SlytherRuntime.of(step.lang, this.artifacts) : undefined;
                     const path = join(folder, `${stepName}.${runtime?.extension ?? "md"}`);
                     const run = runtime?.run(join(this.artifacts, path));
-                    const inputHash = SlytherArtifactBuilder.hash(step.closureHash, operation.scopeHash, kind.scopeHash, step.lang ?? "llm", path);
+                    const inputHash = SlytherArtifactBuilder.hash(step.closureHash, operation.scopeHash, kind.scopeHash, step.lang ?? "llm", this.artifacts, path);
 
                     record.steps.push({ name: stepName, kind: runtime ? "deterministic" : "llm", path, lang: step.lang, run });
                     entries.push({
@@ -125,7 +125,7 @@ export class SlytherArtifactBuilder {
                         kind: kind.name,
                         operation: name,
                         path,
-                        inputHash: SlytherArtifactBuilder.hash(operation.closureHash, kind.scopeHash, path),
+                        inputHash: SlytherArtifactBuilder.hash(operation.closureHash, kind.scopeHash, this.artifacts, path),
                         record,
                         content: this.entryOf(kind, operation, record),
                     });
@@ -151,7 +151,7 @@ export class SlytherArtifactBuilder {
         let content: string;
 
         try {
-            content = await readFile(join(this.root, this.artifacts, entry.path), "utf-8");
+            content = await readFile(join(this.cwd, this.artifacts, entry.path), "utf-8");
         } catch {
             return "its file is missing";
         }
@@ -176,7 +176,7 @@ export class SlytherArtifactBuilder {
             await this.write(entry.path, file.content, entry.inputHash, reply.dependencies);
             await this.install(script.runtime);
 
-            const failure = await new SlytherVerifier(this.root).verify({
+            const failure = await new SlytherVerifier(this.cwd).verify({
                 operation: script.operation,
                 script: join(this.artifacts, entry.path),
                 runtime: script.runtime,
@@ -210,7 +210,7 @@ export class SlytherArtifactBuilder {
 
     /** Writes the file and records it, so the manifest only ever describes what is on disk. */
     private async write(path: string, content: string, inputHash: string, dependencies?: Record<string, string>): Promise<void> {
-        const target = join(this.root, this.artifacts, path);
+        const target = join(this.cwd, this.artifacts, path);
 
         await mkdir(dirname(target), { recursive: true });
         await writeFile(target, content);
@@ -231,7 +231,7 @@ export class SlytherArtifactBuilder {
             return;
         }
 
-        const target = join(this.root, this.artifacts, runtime.dependenciesFile);
+        const target = join(this.cwd, this.artifacts, runtime.dependenciesFile);
         const current = await readFile(target, "utf-8").catch(() => undefined);
 
         if (current !== content) {
@@ -240,7 +240,7 @@ export class SlytherArtifactBuilder {
 
         this.options.log?.(`installing the ${runtime.lang} dependencies`);
 
-        const result = await ProcessUtils.run(command, { cwd: this.root });
+        const result = await ProcessUtils.run(command, { cwd: this.cwd });
 
         if (result.code !== 0) {
             throw new Error(`Installing the ${runtime.lang} dependencies failed:\n${result.stderr || result.stdout}`);
@@ -261,8 +261,8 @@ export class SlytherArtifactBuilder {
             return;
         }
 
-        await mkdir(join(this.root, this.artifacts), { recursive: true });
-        await writeFile(join(this.root, this.artifacts, ".gitignore"), `${[...new Set(ignored)].map((dir) => `${dir}/`).join("\n")}\n`);
+        await mkdir(join(this.cwd, this.artifacts), { recursive: true });
+        await writeFile(join(this.cwd, this.artifacts, ".gitignore"), `${[...new Set(ignored)].map((dir) => `${dir}/`).join("\n")}\n`);
     }
 
     /** What the generator is told to write a deterministic step. */
@@ -308,7 +308,7 @@ export class SlytherArtifactBuilder {
             "## Conventions",
             "",
             `- The script is run as \`${runtime.run(join(this.artifacts, path)).join(" ")}${operation.params.map((param) => ` <${param.name}>`).join("")}\`: it receives the params of the operation as positional arguments, in that order${operation.params.some((param) => param.optional) ? ", and an optional one may be absent" : ""}.`,
-            "- It runs from the root of the project, so every path it reads or prints is relative to that root.",
+            "- It runs from the folder the code of the project lives in, so every path it reads or prints is relative to that folder.",
             "- It prints its result on stdout and its errors on stderr, never asks for input, and exits with the codes the operation describes: 0 on success and 1 when what it looks for does not exist, unless the operation says otherwise.",
             `- It is a single, self-contained file${runtime.lang === "ts" ? " run by bun, so it may use the Bun and node APIs" : ""}, importing only the dependencies it declares.`,
             ...(others.length > 0
@@ -393,7 +393,7 @@ export class SlytherArtifactBuilder {
     }
 
     private async prune(dir: string): Promise<void> {
-        const base = join(this.root, this.artifacts);
+        const base = join(this.cwd, this.artifacts);
 
         for (let current = dir; current.startsWith(base) && current !== base; current = dirname(current)) {
             if ((await readdir(current).catch(() => ["."])).length > 0) {

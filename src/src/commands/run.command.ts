@@ -7,9 +7,9 @@ export const help = {
 
 Runs the operation of the kind as built into ${SlytherProject.OUTPUT}/${SlytherProject.ARTIFACTS}, with the
 args as its params, in the order the operation declares them. A deterministic operation runs its scripts
-in order from the root of the project and exits with the code of the first one that fails. An operation
-that is not deterministic prints the markdown that orchestrates it, with the params substituted, or runs
-it through the LLM when --execute is given.
+in order from ${SlytherProject.OUTPUT}/${SlytherProject.SOURCE}, the folder the code of the project lives in,
+and exits with the code of the first one that fails. An operation that is not deterministic prints the
+markdown that orchestrates it, with the params substituted, or runs it through the LLM when --execute is given.
 
 Arguments:
   <kind>        the kind of artifact

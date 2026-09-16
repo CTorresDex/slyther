@@ -19,6 +19,8 @@ export class SlytherProject {
     static readonly OUTPUT = ".slyther";
     /** Where the build writes its files, relative to the output folder. */
     static readonly BUILD = "build";
+    /** Where the code of the project lives and runs from, relative to the output folder. */
+    static readonly SOURCE = "src";
     /** Where the operations of every kind are built into, relative to the output folder. */
     static readonly ARTIFACTS = "artifacts";
     /** Where what the check found about every artifact is recorded, relative to the output folder. */
@@ -48,9 +50,17 @@ export class SlytherProject {
         return join(this.output, SlytherProject.BUILD);
     }
 
-    /** The folder the operations are built into, relative to the root. */
+    /**
+     * The path of the folder the code of the project lives in. Everything that runs code runs from it, so
+     * a script that reads `./` reads this folder, not the root.
+     */
+    get src(): string {
+        return join(this.output, SlytherProject.SOURCE);
+    }
+
+    /** The folder the operations are built into, relative to the source folder, where they run from. */
     get artifactsDir(): string {
-        return join(SlytherProject.OUTPUT, SlytherProject.ARTIFACTS);
+        return join("..", SlytherProject.ARTIFACTS);
     }
 
     /** Builds the project: parses it, then builds the operations of its kinds. Returns what it did to every file. */
@@ -85,9 +95,11 @@ export class SlytherProject {
             }
         }
 
-        const report = await new SlytherArtifactBuilder(this.root, this.artifactsDir, this.generator, { log: this.log }).build(kinds);
+        await mkdir(this.src, { recursive: true });
 
-        return report.map((entry) => ({ ...entry, path: join(this.root, this.artifactsDir, entry.path) }));
+        const report = await new SlytherArtifactBuilder(this.src, this.artifactsDir, this.generator, { log: this.log }).build(kinds);
+
+        return report.map((entry) => ({ ...entry, path: join(this.src, this.artifactsDir, entry.path) }));
     }
 
     /**
@@ -110,9 +122,11 @@ export class SlytherProject {
         parsed: ParsedSlytherScript,
         options: { fix?: boolean; max?: number } = {},
     ): Promise<{ key: string; status: "pass" | "fail" | "missing" | "kept" | "fixed"; reason?: string; errors: string[] }[]> {
-        const built = await SlytherArtifactManifest.load(join(this.root, this.artifactsDir, SlytherArtifactManifest.FILE));
+        const built = await SlytherArtifactManifest.load(join(this.src, this.artifactsDir, SlytherArtifactManifest.FILE));
+        await mkdir(this.src, { recursive: true });
+
         const checker = new SlytherInstanceChecker(
-            this.root,
+            this.src,
             this.artifactsDir,
             join(this.output, SlytherProject.INSTANCES, SlytherInstanceManifest.FILE),
             built,
@@ -124,7 +138,7 @@ export class SlytherProject {
     }
 
     /**
-     * Runs an operation as built: a deterministic one runs its scripts in order from the root and
+     * Runs an operation as built: a deterministic one runs its scripts in order from the source folder and
      * stops at the first that fails, one that is not prints the markdown that orchestrates it with the
      * params substituted, or runs it through the generator when one is given to execute it with.
      */
@@ -134,7 +148,7 @@ export class SlytherProject {
         args: string[],
         options: { execute?: SlytherGenerator } = {},
     ): Promise<{ code: number; output: string }> {
-        const manifest = await SlytherArtifactManifest.load(join(this.root, this.artifactsDir, SlytherArtifactManifest.FILE));
+        const manifest = await SlytherArtifactManifest.load(join(this.src, this.artifactsDir, SlytherArtifactManifest.FILE));
         const record = manifest.operations[`${kind}::${operation}`];
 
         if (!record) {
@@ -149,9 +163,11 @@ export class SlytherProject {
             );
         }
 
+        await mkdir(this.src, { recursive: true });
+
         if (record.deterministic) {
             for (const step of record.steps) {
-                const process = Bun.spawn([...step.run!, ...args], { cwd: this.root, stdout: "inherit", stderr: "inherit" });
+                const process = Bun.spawn([...step.run!, ...args], { cwd: this.src, stdout: "inherit", stderr: "inherit" });
                 const code = await process.exited;
 
                 if (code !== 0) {
@@ -162,7 +178,7 @@ export class SlytherProject {
             return { code: 0, output: "" };
         }
 
-        let markdown = await readFile(join(this.root, this.artifactsDir, record.entry!), "utf-8");
+        let markdown = await readFile(join(this.src, this.artifactsDir, record.entry!), "utf-8");
 
         record.params.forEach((param, index) => {
             markdown = markdown.replaceAll(`{${param.name}}`, args[index] ?? "");
@@ -172,7 +188,7 @@ export class SlytherProject {
             return { code: 0, output: markdown };
         }
 
-        return { code: 0, output: await options.execute.execute(markdown, this.root) };
+        return { code: 0, output: await options.execute.execute(markdown, this.src) };
     }
 
     /**
@@ -191,6 +207,11 @@ export class SlytherProject {
         if (!(await SlytherProject.exists(project.output))) {
             await mkdir(project.output, { recursive: true });
             created.push(project.output);
+        }
+
+        if (!(await SlytherProject.exists(project.src))) {
+            await mkdir(project.src, { recursive: true });
+            created.push(project.src);
         }
 
         return { project, created };

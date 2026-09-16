@@ -24,9 +24,9 @@ export class SlytherInstanceChecker {
     private manifest!: SlytherInstanceManifest;
 
     constructor(
-        /** The root of the project, where every script runs. */
-        private readonly root: string,
-        /** The folder the operations are built into, relative to the root. */
+        /** The folder the code of the project lives in, where every script runs. */
+        private readonly cwd: string,
+        /** The folder the operations are built into, relative to where the scripts run. */
         private readonly artifacts: string,
         /** Where the instances manifest is written. */
         private readonly path: string,
@@ -203,7 +203,7 @@ export class SlytherInstanceChecker {
      * a slash after the folders, so a folder changes when its structure does and not when a file in it does.
      */
     private async contentOf(key: string, line: string, path: string, start?: string, end?: string): Promise<string> {
-        const target = join(this.root, path);
+        const target = join(this.cwd, path);
         const isFolder = await stat(target).then(
             (info) => info.isDirectory(),
             () => {
@@ -320,7 +320,7 @@ export class SlytherInstanceChecker {
 
         for (const step of operation.steps) {
             if (step.run) {
-                const result = await ProcessUtils.run([...step.run, instance.name], { cwd: this.root });
+                const result = await ProcessUtils.run([...step.run, instance.name], { cwd: this.cwd });
 
                 if (result.code !== 0) {
                     return { pass: false, errors: SlytherInstanceChecker.linesOf(`${result.stdout}\n${result.stderr}`) };
@@ -330,7 +330,7 @@ export class SlytherInstanceChecker {
             }
 
             const prompt = [
-                await readFile(join(this.root, this.artifacts, step.path), "utf-8"),
+                await readFile(join(this.cwd, this.artifacts, step.path), "utf-8"),
                 `## The ${instance.kind} to evaluate: ${instance.name}`,
                 "",
                 ...state.segments!.map((segment) => `### ${segment.path}\n\n\`\`\`\n${segment.content}\n\`\`\``),
@@ -357,7 +357,7 @@ export class SlytherInstanceChecker {
 
         if (operation.deterministic) {
             for (const step of operation.steps) {
-                const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.root });
+                const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd });
 
                 if (result.code !== 0) {
                     throw new Error(`Updating ${key} failed:\n${result.stderr || result.stdout}`);
@@ -367,13 +367,13 @@ export class SlytherInstanceChecker {
             return;
         }
 
-        let markdown = await readFile(join(this.root, this.artifacts, operation.entry!), "utf-8");
+        let markdown = await readFile(join(this.cwd, this.artifacts, operation.entry!), "utf-8");
 
         operation.params.forEach((param, index) => {
             markdown = markdown.replaceAll(`{${param.name}}`, args[index]!);
         });
 
-        await this.generator.execute(`${markdown}\n## Why it failed evaluation\n\n${errors.map((error) => `- ${error}`).join("\n")}\n`, this.root);
+        await this.generator.execute(`${markdown}\n## Why it failed evaluation\n\n${errors.map((error) => `- ${error}`).join("\n")}\n`, this.cwd);
     }
 
     /** The hash of every script and prompt that takes part in evaluating an instance of the kind. */
@@ -413,7 +413,7 @@ export class SlytherInstanceChecker {
         let stdout = "";
 
         for (const step of record.steps) {
-            const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.root });
+            const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd });
 
             if (result.code !== 0) {
                 return { code: result.code, stdout: "" };

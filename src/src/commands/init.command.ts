@@ -6,8 +6,9 @@ export const help = {
     long: `Usage: gstudio init [--flags]
 
 Initializes a Slyther project in the current directory: creates ${SlytherProject.MAIN}, the entry point,
-and ${SlytherProject.OUTPUT}, the folder of Slyther output files. Whatever already exists is left untouched,
-so running it in a project that is already initialized does nothing.`,
+${SlytherProject.OUTPUT}, the folder of Slyther output files, and ${SlytherProject.OUTPUT}/${SlytherProject.SOURCE}, the folder
+the code of the project lives in and runs from. Whatever already exists is left untouched, so running it
+in a project that is already initialized does nothing.`,
 }
 
 export default async function (args: string[], context: { flags: Record<string, string | boolean> }) {
