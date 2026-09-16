@@ -2,13 +2,13 @@
 @use Compiler
 
 command parse {
-    Input: input file
+    Input: input file, defaults to main.sly
 
     Parses the input file and prints the JSON representation of the result #{ParsedSlytherScript}
 }
 
 command kinds {
-    Input: input file
+    Input: input file, defaults to main.sly
 
     Parses the input file and prints the JSON representation of every #{SlytherArtifactKind} it defines
 }
