@@ -11,11 +11,3 @@ command kinds {
 
     Parses the input file and prints the JSON representation of every #{SlytherArtifactKind} it defines
 }
-
-command compile {
-    Input: input file, and optionally the model to ask as a flag
-
-    Parses the input file and compiles every #{SlytherArtifactKind} it defines with the #{SlytherCompiler},
-    from the current directory as the project root, reporting each file as it is settled and, at the
-    end, how many were generated, how many reused and how many skills were written
-}
