@@ -5,6 +5,7 @@ import { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import { SlytherClosureHasher } from "./SlytherClosureHasher.class.ts";
 import type { SlytherScript } from "./SlytherScript.class.ts";
+import { StringUtils } from "./StringUtils.class.ts";
 
 export class SlytherParser {
     /** `@artifact Name (args) { tail`: declares a kind. The brace is optional, the tail is whatever follows it. */
@@ -214,7 +215,7 @@ export class SlytherParser {
 
                         body.push(line.slice(0, closed.at));
 
-                        return { content: this.dedent(body), end: index };
+                        return { content: StringUtils.dedent(body), end: index };
                     }
 
                     depth = closed.depth;
@@ -229,18 +230,6 @@ export class SlytherParser {
 
             line = lines[index]!;
         }
-    }
-
-    /** The lines of a body without the indentation they share and without the blank lines around them. */
-    private dedent(lines: string[]): string {
-        const indent = Math.min(
-            ...lines.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length),
-        );
-
-        return lines
-            .map((line) => (line.trim() ? line.slice(indent) : ""))
-            .join("\n")
-            .trim();
     }
 
     /** Counts the braces of a line outside inline code, and where the brace that closes the block is, if any. */
@@ -303,7 +292,7 @@ export class SlytherParser {
     }
 
     private argumentsOf(declaration: { args: string; scope: string }, owner: string): SlytherArtifact["args"] {
-        return this.entriesOf(declaration.args).map((entry) => {
+        return StringUtils.splitUnquoted(declaration.args, ",").map((entry) => {
             const boundary = entry.indexOf(":");
             const name = boundary < 0 ? "" : entry.slice(0, boundary).trim();
 
@@ -315,34 +304,6 @@ export class SlytherParser {
 
             return { name, ...this.valueOf(value, name, owner, declaration.scope) };
         });
-    }
-
-    private entriesOf(text: string): string[] {
-        const entries: string[] = [];
-        let current = "";
-        let quote = "";
-
-        for (const character of text) {
-            if (quote) {
-                current += character;
-                quote = character === quote ? "" : quote;
-                continue;
-            }
-
-            if (character === '"' || character === "'") {
-                quote = character;
-            } else if (character === ",") {
-                entries.push(current);
-                current = "";
-                continue;
-            }
-
-            current += character;
-        }
-
-        entries.push(current);
-
-        return entries.filter((entry) => entry.trim().length > 0);
     }
 
     private valueOf(
