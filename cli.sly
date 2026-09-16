@@ -28,3 +28,9 @@ command run {
     Runs the operation using the #{Project::SlytherProject::run} method: prints what it returns and exits with
     its code. With --execute, an operation that is not deterministic runs through a #{Build::ClaudeCLIGenerator}
 }
+command check {
+    Input: the --fix and --max flags
+
+    Checks the current #{Project::SlytherProject} using the #{Project::SlytherProject::check} method, prints what
+    happened to every artifact with its errors, and exits 1 when any fails or is missing
+}

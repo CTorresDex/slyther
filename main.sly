@@ -6,4 +6,5 @@
 
 @import "./compiler.sly"
 @import "./build.sly"
+@import "./check.sly"
 @import "./cli.sly"

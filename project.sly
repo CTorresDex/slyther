@@ -10,9 +10,10 @@ class SlytherProject {
     - .slyther/build/parser.json: The JSON representation of the SlytherScript parsed from main.sly after a build
     - .slyther/artifacts: The operations of every kind as built, see #{Build::SlytherArtifactBuilder}
     - .slyther/artifacts/manifest.json: The #{Build::SlytherArtifactManifest}
+    - .slyther/instances/manifest.json: The #{Check::SlytherInstanceManifest}
 
-    .slyther/build is ignored by version control and .slyther/artifacts is committed, so a checkout runs
-    the operations without building them again.
+    .slyther/build is ignored by version control, .slyther/artifacts and .slyther/instances are committed,
+    so a checkout runs the operations without building them again and a check evaluates only what changed.
 }
 
 method SlytherProject::build {
@@ -39,4 +40,14 @@ method SlytherProject::run {
     returning that code. An operation that is not deterministic returns the markdown that orchestrates it
     with every `{param}` substituted by its arg, or, when a #{Build::SlytherGenerator} is given to execute
     it, hands the markdown to it and returns its reply.
+}
+method SlytherProject::check {
+    Executes the #{SlytherProject::parse} method
+    Executes the #{SlytherProject::buildArtifacts} method
+    Executes the #{SlytherProject::checkInstances} method
+}
+
+method SlytherProject::checkInstances {
+    Checks every artifact the parsed script declares with #{Check::SlytherInstanceChecker}, given the fix and
+    max options, and returns what happened to every one: pass, fail, missing, kept or fixed, with its errors
 }

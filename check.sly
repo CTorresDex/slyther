@@ -1,0 +1,51 @@
+@import "./compiler.sly"
+@import "./build.sly"
+@use Check
+
+class SlytherInstanceManifest {
+    What a check remembers about every instance, written as manifest.json in .slyther/instances and keyed
+    by `kind:name`, contains for each one:
+
+    - contentHash: The hash of the segments locate prints, each as its path and its content, sorted, so
+      where a segment is never matters, only what it holds
+    - signature: The `key shape` lines signature printed, when the kind prints them
+    - dependencies: For every instance it references, the content hash and the signature it had when
+      this one was evaluated
+    - evaluatedWith: The hash of every script and prompt that takes part in evaluating an instance of the
+      kind, as built: locate, signature, uses and evaluate
+    - result: pass, fail or missing, and errors: what evaluate reported
+
+    Loading a manifest that does not exist gives an empty one, and it is saved with its instances sorted.
+}
+
+class SlytherInstanceChecker {
+    Checks every instance a #{Compiler::ParsedSlytherScript} declares against the rules of its kind, given
+    the root of the project, the folder the operations are built into, the path of the
+    #{SlytherInstanceManifest}, the #{Build::SlytherArtifactManifest} and a #{Build::SlytherGenerator}.
+
+    An instance is every artifact whose kind has operations, identified by its name, and the instances it
+    references with \#{} are its dependencies. Instances are checked in an order where every one comes
+    after its dependencies, so a dependency is evaluated, and fixed, before what depends on it.
+
+    For every instance, locate says where it is: when it exits 1 the instance is missing and nothing
+    else is done. Otherwise its content hash, its signature and what it uses are computed, and it is
+    evaluated again when it was never evaluated, when its content hash changed, when what evaluates it
+    changed, or when a dependency changed in a way it uses: for a dependency, the signature it had when
+    this instance was evaluated is compared with the one it has now, key by key, into the keys whose
+    shape changed or that are gone, and the keys that are new. What the instance uses of the dependency
+    decides: a key, when that key changed; `*`, when any key changed; `**`, when any key changed or was
+    added. Without uses, `*` is assumed, and without signatures, any change of the content hash of the
+    dependency counts. A key the instance uses that is gone fails it without evaluating, since it is
+    certainly broken. Whatever evaluates it and passes is recorded, so the next check keeps it, and an
+    instance that failed is reported as failing until it changes.
+
+    Evaluating runs the evaluate operation of the kind: every deterministic step as its script with the
+    id, failing with what it prints when it exits with a code other than 0, then every llm step as its
+    markdown followed by the segments of the instance, asked from the generator for a verdict of pass
+    and errors. With fix, an instance that fails is updated with the update operation of its kind, the id
+    as its param named id and the errors as any other param, as scripts, or as its markdown executed by
+    the generator with the errors appended, and evaluated once more. With max, checking refuses to
+    evaluate more instances with the llm than allowed, before evaluating any.
+
+    Every id list prints that the script does not declare is reported as a warning.
+}

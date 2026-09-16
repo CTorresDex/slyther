@@ -7,6 +7,8 @@ import { SlytherArtifactBuilder } from "./SlytherArtifactBuilder.class.ts";
 import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
+import { SlytherInstanceChecker } from "./SlytherInstanceChecker.class.ts";
+import { SlytherInstanceManifest } from "./SlytherInstanceManifest.class.ts";
 import { SlytherParser } from "./SlytherParser.class.ts";
 import { SlytherScript } from "./SlytherScript.class.ts";
 
@@ -19,6 +21,8 @@ export class SlytherProject {
     static readonly BUILD = "build";
     /** Where the operations of every kind are built into, relative to the output folder. */
     static readonly ARTIFACTS = "artifacts";
+    /** Where what the check found about every artifact is recorded, relative to the output folder. */
+    static readonly INSTANCES = "instances";
 
     constructor(
         /** The folder the slyther files live in. */
@@ -84,6 +88,39 @@ export class SlytherProject {
         const report = await new SlytherArtifactBuilder(this.root, this.artifactsDir, this.generator, { log: this.log }).build(kinds);
 
         return report.map((entry) => ({ ...entry, path: join(this.root, this.artifactsDir, entry.path) }));
+    }
+
+    /**
+     * Builds the project, then checks every artifact its scripts declare against the rules of its kind,
+     * evaluating again only what changed. Returns what happened to every artifact.
+     */
+    async check(options: { fix?: boolean; max?: number } = {}): Promise<Awaited<ReturnType<SlytherProject["checkInstances"]>>> {
+        const { parsed } = await this.parse();
+
+        await this.buildArtifacts(parsed);
+
+        return this.checkInstances(parsed, options);
+    }
+
+    /**
+     * Checks every artifact the parsed script declares whose kind has operations with the operations as
+     * built, recording what it finds in the instances folder so the next check evaluates only what changed.
+     */
+    async checkInstances(
+        parsed: ParsedSlytherScript,
+        options: { fix?: boolean; max?: number } = {},
+    ): Promise<{ key: string; status: "pass" | "fail" | "missing" | "kept" | "fixed"; reason?: string; errors: string[] }[]> {
+        const built = await SlytherArtifactManifest.load(join(this.root, this.artifactsDir, SlytherArtifactManifest.FILE));
+        const checker = new SlytherInstanceChecker(
+            this.root,
+            this.artifactsDir,
+            join(this.output, SlytherProject.INSTANCES, SlytherInstanceManifest.FILE),
+            built,
+            this.generator,
+            { ...options, log: this.log },
+        );
+
+        return checker.check(parsed, SlytherArtifactKind.of(parsed));
     }
 
     /**
