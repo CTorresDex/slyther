@@ -8,6 +8,11 @@ class SlytherProject {
     - .slyther: Contains the Slyther output files
     - .slyther/build
     - .slyther/build/parser.json: The JSON representation of the SlytherScript parsed from main.sly after a build
+    - .slyther/artifacts: The operations of every kind as built, see #{Build::SlytherArtifactBuilder}
+    - .slyther/artifacts/manifest.json: The #{Build::SlytherArtifactManifest}
+
+    .slyther/build is ignored by version control and .slyther/artifacts is committed, so a checkout runs
+    the operations without building them again.
 }
 
 method SlytherProject::build {
@@ -20,5 +25,18 @@ method SlytherProject::parse {
 }
 
 method SlytherProject::buildArtifacts {
-    Builds the operations of every #{Compiler::SlytherArtifactKind} of the project into .slyther/artifacts
+    Groups the parsed script into every #{Compiler::SlytherArtifactKind}, prints their warnings, and builds
+    their operations into .slyther/artifacts with #{Build::SlytherArtifactBuilder}, returning what it did to
+    every file: built, rebuilt, kept or removed
+}
+
+method SlytherProject::run {
+    Runs an operation of a kind as built, given the kind, the operation and its args, which must fit the
+    params of the operation, otherwise it must throw an error, as must an operation that is not built.
+
+    A deterministic operation runs the script of each of its steps in order from the root of the project,
+    with the args as positional arguments, and stops at the first that exits with a code other than 0,
+    returning that code. An operation that is not deterministic returns the markdown that orchestrates it
+    with every `{param}` substituted by its arg, or, when a #{Build::SlytherGenerator} is given to execute
+    it, hands the markdown to it and returns its reply.
 }

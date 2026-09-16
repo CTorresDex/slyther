@@ -45,6 +45,20 @@ describe("SlytherVerifier", () => {
         expect(await verifier.verify({ operation: "list", script: bad, runtime })).toStartWith("list-bad.sh must exit 0 but exited 2");
     });
 
+    test("locate must find the first id list prints", async () => {
+        const locate = { script: await write("locate.sh", '[ "$1" = "a" ] && echo src/a.ts && exit 0; exit 1\n'), runtime };
+        const ok = await write("list-ok.sh", "echo a\n");
+        const bad = await write("list-mismatch.sh", "echo b\n");
+        const empty = await write("list-empty.sh", "true\n");
+        const verifier = new SlytherVerifier(root);
+
+        expect(await verifier.verify({ operation: "list", script: ok, runtime, locate })).toBeNull();
+        expect(await verifier.verify({ operation: "list", script: empty, runtime, locate })).toBeNull();
+        expect(await verifier.verify({ operation: "list", script: bad, runtime, locate })).toBe(
+            'list-mismatch.sh printed the id "b" but locate.sh does not find it: list must print the ids locate takes.',
+        );
+    });
+
     test("locate runs with the first id list prints and must exit 0 or 1", async () => {
         const list = { script: await write("list.sh", "echo a\necho b\n"), runtime };
         const ok = await write("locate.sh", '[ "$1" = "a" ] && echo src/a.ts && exit 0; exit 1\n');

@@ -18,5 +18,13 @@ command init {
 }
 
 command build {
-    Builds the current #{Project::SlytherProject} using the #{Project::SlytherProject::build} method
+    Builds the current #{Project::SlytherProject} using the #{Project::SlytherProject::build} method and prints
+    what it did to every file
+}
+
+command run {
+    Input: the kind, the operation, its args in order, and the --execute flag
+
+    Runs the operation using the #{Project::SlytherProject::run} method: prints what it returns and exits with
+    its code. With --execute, an operation that is not deterministic runs through a #{Build::ClaudeCLIGenerator}
 }

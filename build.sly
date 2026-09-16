@@ -65,7 +65,58 @@ class SlytherVerifier {
 
     Every script is checked for syntax with the command of its #{SlytherRuntime}. The scripts of the
     read-only operations, locate, list, signature and uses, are also run, since running them changes
-    nothing: list with no args must exit 0, and the others must exit 0 or 1 given the first id list
-    prints, or a sample id when it prints none. When signature exits 0, every line it prints must have
-    the `key shape` form, and when uses exits 0, every line must have the `kind:id key` form.
+    nothing: list with no args must exit 0, and locate must find the first id it prints, so list prints
+    the ids locate takes; the others must exit 0 or 1 given the first id list prints, or a sample id when
+    it prints none, and print nothing when they exit 1. When signature exits 0, every line it prints must
+    have the `key shape` form, and when uses exits 0, every line must have the `kind:id key` form.
+}
+
+class SlytherArtifactManifest {
+    What a build remembers, written as manifest.json in the artifacts folder, contains:
+
+    - operations: Every operation built, keyed by `kind::name`, with its kind, its name, whether it is
+      deterministic, its params, the markdown that orchestrates it when it is not deterministic, and its
+      steps in order, each with its name, its kind, its path relative to the artifacts folder and, for a
+      deterministic one, its lang and the command that runs it
+    - files: Every file built, keyed by its path relative to the artifacts folder, with the input hash it
+      was built from, the output hash of the content it was written with, and the dependencies it declares
+
+    Loading a manifest that does not exist gives an empty one. It is saved with its entries sorted, so it
+    diffs well, and gives the union of the dependencies declared by every file of a lang, one version per
+    package.
+}
+
+class SlytherArtifactBuilder {
+    Brings the artifacts folder in line with a list of #{Compiler::SlytherArtifactKind}, given the root of
+    the project, the folder relative to it and a #{SlytherGenerator}. Every kind with operations gets a
+    folder per operation, `kind/operation`, holding a script per deterministic step, named after the step
+    with the extension of its #{SlytherRuntime}, a markdown per llm step, and operation.md for an
+    operation that is not deterministic. The operations locate, list, signature and uses are built before
+    the others, since the others may run them.
+
+    The input hash of a step is the hash of its closure hash, the scope hash of its operation, the scope
+    hash of its kind, its lang and its path, so it changes when the step, the rules or the operation
+    change and not when a sibling step does. The input hash of operation.md is the hash of the closure
+    hash of the operation, the scope hash of the kind and its path.
+
+    A file is built when the #{SlytherArtifactManifest} does not know it, when its input hash changed,
+    when it is missing, or when the hash of its content is not the output hash it was written with,
+    which means it was edited by hand. A file the manifest knows that no kind asks for anymore is
+    removed, along with the folders left empty. Anything else is kept, and the build reports what it
+    did to every file.
+
+    The markdown of an llm step and operation.md are written by Slyther itself: the first holds the rules
+    of the kind, the params of the operation and the prose of the step, the second lists the steps in
+    order, as the command to run for a deterministic one, with every param as `"{name}"`, and as the
+    markdown to follow for an llm one. A script is asked from the generator with a
+    #{SlytherGenerationTask}: its instructions hold the rules of the kind, the operation and its params,
+    the step, the conventions every script follows and the commands that run the other deterministic
+    operations of the kind already built, and its context holds the prose of every artifact the kind, the
+    operation or the step reference. Once written, the dependencies the reply declares are recorded, the
+    dependencies file of the lang is rewritten when their union changed and installed, and the script is
+    checked with #{SlytherVerifier}: when it fails, the failure is sent back with `fix`, up to three
+    attempts, after which the build throws and the file is not recorded, so the next build tries again.
+
+    The manifest is saved after every file is built, so a build that fails halfway keeps what it did, and
+    a .gitignore inside the artifacts folder ignores whatever the runtimes in use create.
 }

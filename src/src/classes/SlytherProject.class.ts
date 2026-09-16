@@ -1,7 +1,12 @@
 // Imports
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { ClaudeCLIGenerator } from "./ClaudeCLIGenerator.class.ts";
 import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
+import { SlytherArtifactBuilder } from "./SlytherArtifactBuilder.class.ts";
+import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
+import { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
+import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import { SlytherParser } from "./SlytherParser.class.ts";
 import { SlytherScript } from "./SlytherScript.class.ts";
 
@@ -12,10 +17,16 @@ export class SlytherProject {
     static readonly OUTPUT = ".slyther";
     /** Where the build writes its files, relative to the output folder. */
     static readonly BUILD = "build";
+    /** Where the operations of every kind are built into, relative to the output folder. */
+    static readonly ARTIFACTS = "artifacts";
 
     constructor(
         /** The folder the slyther files live in. */
         readonly root: string,
+        /** What writes the scripts of the deterministic steps. */
+        private readonly generator: SlytherGenerator = new ClaudeCLIGenerator(process.env.SLYTHER_MODEL ?? ""),
+        /** Where the build reports what it does. */
+        private readonly log: (line: string) => void = () => {},
     ) {}
 
     /** The path of the entry point. */
@@ -33,9 +44,16 @@ export class SlytherProject {
         return join(this.output, SlytherProject.BUILD);
     }
 
-    /** Builds the project, returning the paths it wrote. */
-    async build(): Promise<string[]> {
-        return [(await this.parse()).path];
+    /** The folder the operations are built into, relative to the root. */
+    get artifactsDir(): string {
+        return join(SlytherProject.OUTPUT, SlytherProject.ARTIFACTS);
+    }
+
+    /** Builds the project: parses it, then builds the operations of its kinds. Returns what it did to every file. */
+    async build(): Promise<{ path: string; status: "built" | "rebuilt" | "kept" | "removed" }[]> {
+        const { parsed, path } = await this.parse();
+
+        return [{ path, status: "built" as const }, ...(await this.buildArtifacts(parsed))];
     }
 
     /** Parses the entry point and writes its JSON representation to the build folder as parser.json. */
@@ -47,6 +65,77 @@ export class SlytherProject {
         await writeFile(path, JSON.stringify(parsed, null, 4));
 
         return { parsed, path };
+    }
+
+    /**
+     * Builds the operations of every kind into the artifacts folder, where a manifest remembers the
+     * hash each file was built from and the hash it was written with, so only what is new, changed,
+     * missing or edited by hand is built again, and what is gone is removed.
+     */
+    async buildArtifacts(parsed: ParsedSlytherScript): Promise<{ path: string; status: "built" | "rebuilt" | "kept" | "removed" }[]> {
+        const kinds = SlytherArtifactKind.of(parsed);
+
+        for (const kind of kinds) {
+            for (const warning of kind.warnings) {
+                this.log(`warning: ${warning}`);
+            }
+        }
+
+        const report = await new SlytherArtifactBuilder(this.root, this.artifactsDir, this.generator, { log: this.log }).build(kinds);
+
+        return report.map((entry) => ({ ...entry, path: join(this.root, this.artifactsDir, entry.path) }));
+    }
+
+    /**
+     * Runs an operation as built: a deterministic one runs its scripts in order from the root and
+     * stops at the first that fails, one that is not prints the markdown that orchestrates it with the
+     * params substituted, or runs it through the generator when one is given to execute it with.
+     */
+    async run(
+        kind: string,
+        operation: string,
+        args: string[],
+        options: { execute?: SlytherGenerator } = {},
+    ): Promise<{ code: number; output: string }> {
+        const manifest = await SlytherArtifactManifest.load(join(this.root, this.artifactsDir, SlytherArtifactManifest.FILE));
+        const record = manifest.operations[`${kind}::${operation}`];
+
+        if (!record) {
+            throw new Error(`The operation "${kind}::${operation}" is not built: run build first, or check the name.`);
+        }
+
+        const required = record.params.filter((param) => !param.optional).length;
+
+        if (args.length < required || args.length > record.params.length) {
+            throw new Error(
+                `The operation "${kind}::${operation}" takes (${record.params.map((param) => `${param.name}: ${param.type}${param.optional ? "?" : ""}`).join(", ")}), not ${args.length} argument${args.length === 1 ? "" : "s"}.`,
+            );
+        }
+
+        if (record.deterministic) {
+            for (const step of record.steps) {
+                const process = Bun.spawn([...step.run!, ...args], { cwd: this.root, stdout: "inherit", stderr: "inherit" });
+                const code = await process.exited;
+
+                if (code !== 0) {
+                    return { code, output: "" };
+                }
+            }
+
+            return { code: 0, output: "" };
+        }
+
+        let markdown = await readFile(join(this.root, this.artifactsDir, record.entry!), "utf-8");
+
+        record.params.forEach((param, index) => {
+            markdown = markdown.replaceAll(`{${param.name}}`, args[index] ?? "");
+        });
+
+        if (!options.execute) {
+            return { code: 0, output: markdown };
+        }
+
+        return { code: 0, output: await options.execute.execute(markdown, this.root) };
     }
 
     /**

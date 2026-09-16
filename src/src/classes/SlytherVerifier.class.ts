@@ -20,13 +20,15 @@ export class SlytherVerifier {
     /**
      * Checks the script of a deterministic step and returns why it fails, or null when it passes. The
      * script is checked for syntax, and the scripts of the read-only operations are also run, with the
-     * script of list when the step is not list itself, to get a real id to run them with.
+     * script of list when the step is not list itself, to get a real id to run them with, and with the
+     * script of locate when the step is list, since locate must find every id list prints.
      */
     async verify(step: {
         operation: string;
         script: string;
         runtime: SlytherRuntime;
         list?: { script: string; runtime: SlytherRuntime };
+        locate?: { script: string; runtime: SlytherRuntime };
     }): Promise<string | null> {
         const check = await ProcessUtils.run(step.runtime.check(step.script), { cwd: this.root });
 
@@ -41,7 +43,21 @@ export class SlytherVerifier {
         if (step.operation === "list") {
             const list = await ProcessUtils.run(step.runtime.run(step.script), { cwd: this.root });
 
-            return list.code === 0 ? null : `${step.script} must exit 0 but exited ${list.code}:\n${list.stderr}`;
+            if (list.code !== 0) {
+                return `${step.script} must exit 0 but exited ${list.code}:\n${list.stderr}`;
+            }
+
+            const [id] = SlytherVerifier.linesOf(list.stdout);
+
+            if (id === undefined || !step.locate) {
+                return null;
+            }
+
+            const located = await ProcessUtils.run([...step.locate.runtime.run(step.locate.script), id], { cwd: this.root });
+
+            return located.code === 0
+                ? null
+                : `${step.script} printed the id "${id}" but ${step.locate.script} does not find it: list must print the ids locate takes.`;
         }
 
         const id = (await this.firstId(step.list)) ?? SlytherVerifier.SAMPLE;
