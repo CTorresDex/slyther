@@ -49,9 +49,24 @@ class SlytherParser {
     declares it, so importing never re-homes it, and a script is only read once no matter how many
     times it is imported, so scripts may import each other.
 
-    An `@artifact Name` line declares an artifact kind and is the only way to make it available: a
-    declaration of a kind that was not declared before it must throw an error. Only artifact and
-    namespace are built in.
+    An `@artifact Name { rules }` line declares a kind, as an artifact of the built-in kind artifact,
+    and is the only way to make it available: a declaration of a kind that was not declared before it
+    must throw an error, and so must writing a kind as a plain `artifact Name` declaration. The braces
+    are optional, and a kind is always declared globally, whatever `@use` is in effect. The built-in
+    kinds are namespace, operation, llm and deterministic.
+
+    A body may nest blocks, and a nested block is sugar for a `Parent::child` name: an artifact may
+    contain operation blocks, an operation may contain llm and deterministic blocks, and no other
+    kind contains anything. The nested block's text is left out of its parent's content, and its
+    scope is its parent, so a reference inside it resolves in the parent first, then in each
+    enclosing scope, then globally. A block may open and close on one line, as `llm input { ... }`.
+
+    Prose is told apart from a nested block by three rules: fenced and inline code is opaque, so
+    nothing inside backticks opens, closes or references anything; a line only opens a block if it
+    has the shape `kind name (args) {` and the kind is one its owner may contain, any other line is
+    prose even if it ends in a brace; and a line starting with a backslash before such a shape is
+    prose with the backslash removed. A line that opens a block of a known kind where its owner may
+    not contain it must throw an error, as must text after the brace that closes a block.
 
     Declaring the same name twice in the same scope must throw an error.
 }
