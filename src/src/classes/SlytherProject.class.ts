@@ -29,17 +29,20 @@ export class SlytherProject {
 
     /** What writes the scripts of the deterministic steps, traced when the project is verbose. */
     private readonly generator: SlytherGenerator;
+    /** Where the build reports what it does, as plain functions so they can be handed around and spread. */
+    private readonly progress: { log: (line: string) => void; say: (label: string) => void };
 
     constructor(
         /** The folder the slyther files live in. */
         readonly root: string,
         generator: SlytherGenerator = new ClaudeCLIGenerator(process.env.SLYTHER_MODEL ?? ""),
         /** Where the build reports what it does: log prints a finished line, say names what it is waiting on. */
-        private readonly progress: { log: (line: string) => void; say: (label: string) => void } = { log: () => {}, say: () => {} },
+        progress: { log: (line: string) => void; say: (label: string) => void } = { log: () => {}, say: () => {} },
         /** verbose: every prompt sent to the llm and every reply are logged. */
         options: { verbose?: boolean } = {},
     ) {
-        this.generator = options.verbose ? new SlytherTracedGenerator(generator, progress.log) : generator;
+        this.progress = { log: (line) => progress.log(line), say: (label) => progress.say(label) };
+        this.generator = options.verbose ? new SlytherTracedGenerator(generator, this.progress.log) : generator;
     }
 
     /** The path of the entry point. */
