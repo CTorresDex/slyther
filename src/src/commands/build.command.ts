@@ -28,7 +28,7 @@ export default async function (args: string[], context: { flags: Record<string, 
     if (max !== undefined && !Number.isInteger(max)) throw new Error('--max takes a whole number')
 
     const { files, instances } = await Progress.of('Building').run(async (progress) =>
-        new SlytherProject(process.cwd(), undefined, (line) => progress.log(line)).build({ max }),
+        new SlytherProject(process.cwd(), undefined, progress).build({ max }),
     )
     const failed = instances.filter((entry) => entry.status === 'fail' || entry.status === 'missing')
 

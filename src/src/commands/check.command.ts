@@ -22,7 +22,7 @@ export default async function (args: string[], context: { flags: Record<string, 
     if (max !== undefined && !Number.isInteger(max)) throw new Error('--max takes a whole number')
 
     const report = await Progress.of('Checking').run(async (progress) =>
-        new SlytherProject(process.cwd(), undefined, (line) => progress.log(line)).check({ max }),
+        new SlytherProject(process.cwd(), undefined, progress).check({ max }),
     )
     const failed = report.filter((entry) => entry.status === 'fail' || entry.status === 'missing')
 

@@ -31,8 +31,8 @@ export class SlytherProject {
         readonly root: string,
         /** What writes the scripts of the deterministic steps. */
         private readonly generator: SlytherGenerator = new ClaudeCLIGenerator(process.env.SLYTHER_MODEL ?? ""),
-        /** Where the build reports what it does. */
-        private readonly log: (line: string) => void = () => {},
+        /** Where the build reports what it does: log prints a finished line, say names what it is waiting on. */
+        private readonly progress: { log: (line: string) => void; say: (label: string) => void } = { log: () => {}, say: () => {} },
     ) {}
 
     /** The path of the entry point. */
@@ -99,13 +99,13 @@ export class SlytherProject {
 
         for (const kind of kinds) {
             for (const warning of kind.warnings) {
-                this.log(`warning: ${warning}`);
+                this.progress.log(`warning: ${warning}`);
             }
         }
 
         await mkdir(this.src, { recursive: true });
 
-        const report = await new SlytherArtifactBuilder(this.src, this.artifactsDir, this.generator, { log: this.log }).build(kinds);
+        const report = await new SlytherArtifactBuilder(this.src, this.artifactsDir, this.generator, this.progress).build(kinds);
 
         return report.map((entry) => ({ ...entry, path: join(this.src, this.artifactsDir, entry.path) }));
     }
@@ -141,7 +141,7 @@ export class SlytherProject {
             join(this.output, SlytherProject.INSTANCES, SlytherInstanceManifest.FILE),
             built,
             this.generator,
-            { ...options, log: this.log },
+            { ...options, ...this.progress },
         );
 
         return checker.check(parsed, SlytherArtifactKind.of(parsed));

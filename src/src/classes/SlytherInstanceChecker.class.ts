@@ -8,6 +8,7 @@ import type { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts
 import type { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import { SlytherInstanceManifest } from "./SlytherInstanceManifest.class.ts";
+import { StringUtils } from "./StringUtils.class.ts";
 import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 
 export class SlytherInstanceChecker {
@@ -35,7 +36,8 @@ export class SlytherInstanceChecker {
         private readonly path: string,
         private readonly built: SlytherArtifactManifest,
         private readonly generator: SlytherGenerator,
-        private readonly options: { compile?: boolean; max?: number; log?: (line: string) => void } = {},
+        /** compile: create and update; max: llm budget; log: prints a finished line; say: names what is being waited on. */
+        private readonly options: { compile?: boolean; max?: number; log?: (line: string) => void; say?: (label: string) => void } = {},
     ) {}
 
     /**
@@ -67,6 +69,7 @@ export class SlytherInstanceChecker {
         const states = new Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>();
 
         for (const [key, instance] of instances) {
+            this.options.say?.(`${key}: locating`);
             states.set(key, await this.stateOf(key, instance));
         }
 
@@ -104,13 +107,12 @@ export class SlytherInstanceChecker {
                 continue;
             }
 
-            this.options.log?.(`${key}: ${work.reason}`);
+            const started = Date.now();
 
             let verdict: { pass: boolean; errors: string[] };
             let status: Awaited<ReturnType<SlytherInstanceChecker["check"]>>[number]["status"];
 
             if (work.operation) {
-                this.options.log?.(`${key}: ${work.operation === "create" ? "creating" : "updating"}`);
                 await this.perform(work.operation, instance, key, []);
                 state = await this.relocate(key, instance, states);
                 verdict =
@@ -124,7 +126,7 @@ export class SlytherInstanceChecker {
             status = verdict.pass ? work.done : "fail";
 
             if (!verdict.pass && this.options.compile && state.segments !== undefined && this.has(instance.kind, "update")) {
-                this.options.log?.(`${key}: updating to fix ${verdict.errors.length} error${verdict.errors.length === 1 ? "" : "s"}`);
+                this.options.log?.(`${key}: failed evaluation, updating to fix:\n${verdict.errors.map((error) => `    - ${error}`).join("\n")}`);
                 await this.perform("update", instance, key, verdict.errors);
                 state = await this.relocate(key, instance, states);
                 verdict = state.segments === undefined ? { pass: false, errors: ["the update removed it"] } : await this.evaluate(instance, key, state);
@@ -148,6 +150,7 @@ export class SlytherInstanceChecker {
                 errors: verdict.errors,
             };
             await this.manifest.save();
+            this.options.log?.(`${status} ${key}: ${work.reason} (${StringUtils.duration(Date.now() - started)})`);
             report.push({ key, status, reason: work.reason, errors: verdict.errors });
         }
 
@@ -386,6 +389,8 @@ export class SlytherInstanceChecker {
 
         for (const step of operation.steps) {
             if (step.run) {
+                this.options.say?.(`${key}: evaluating with ${step.run.join(" ")}`);
+
                 const result = await ProcessUtils.run([...step.run, instance.name], { cwd: this.cwd });
 
                 if (result.code !== 0) {
@@ -409,6 +414,8 @@ export class SlytherInstanceChecker {
                 "",
                 "Reply with `pass` true when it complies with everything above, else false with one entry in `errors` per discrepancy.",
             ].join("\n");
+            this.options.say?.(`${key}: evaluating with the llm (${step.path})`);
+
             const verdict = await this.generator.ask<{ pass: boolean; errors: string[] }>(prompt, SlytherInstanceChecker.VERDICT);
 
             if (!verdict.result.pass) {
@@ -428,8 +435,12 @@ export class SlytherInstanceChecker {
         const operation = this.built.operations[`${instance.kind}::${name}`]!;
         const args = SlytherInstanceChecker.argsOf(operation, instance, key, errors);
 
+        const verb = name === "create" ? "creating" : "updating";
+
         if (operation.deterministic) {
             for (const step of operation.steps) {
+                this.options.say?.(`${key}: ${verb} with ${step.run!.join(" ")}`);
+
                 const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd });
 
                 if (result.code !== 0) {
@@ -450,6 +461,7 @@ export class SlytherInstanceChecker {
             markdown = `${markdown}\n## Why it failed evaluation\n\n${errors.map((error) => `- ${error}`).join("\n")}\n`;
         }
 
+        this.options.say?.(`${key}: ${verb} with the llm (${operation.entry})`);
         await this.generator.execute(markdown, this.cwd);
     }
 

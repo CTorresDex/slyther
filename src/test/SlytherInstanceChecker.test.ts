@@ -182,7 +182,7 @@ describe("SlytherInstanceChecker", () => {
         await rm(join(code(), "B.txt"));
         await write("C.txt", "c\n");
 
-        const report = await new SlytherProject(root, new FakeGenerator(SCRIPTS), (line) => lines.push(line)).check();
+        const report = await new SlytherProject(root, new FakeGenerator(SCRIPTS), { log: (line) => lines.push(line), say: () => {} }).check();
 
         expect(statuses(report)).toEqual(["k:A pass (never evaluated)", "k:B missing"]);
         expect(lines).toContain('warning: the k "C" exists but is not declared');

@@ -13,6 +13,16 @@ export class StringUtils {
             .trim();
     }
 
+    /** A span of milliseconds as people read it: `800ms`, `42s` or `2m10s`. */
+    static duration(milliseconds: number): string {
+        const seconds = Math.round(milliseconds / 1000);
+
+        if (seconds < 1) return `${Math.round(milliseconds)}ms`;
+        if (seconds < 60) return `${seconds}s`;
+
+        return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+    }
+
     /**
      * Splits the text on every separator that falls outside a quoted run, keeping the quotes, and
      * drops the entries that hold nothing but whitespace.

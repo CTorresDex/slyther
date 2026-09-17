@@ -8,6 +8,7 @@ import type { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import { SlytherRuntime } from "./SlytherRuntime.class.ts";
 import { SlytherVerifier } from "./SlytherVerifier.class.ts";
+import { StringUtils } from "./StringUtils.class.ts";
 
 export class SlytherArtifactBuilder {
     /** How many times a script that fails verification is sent back to be fixed before the build fails. */
@@ -26,7 +27,8 @@ export class SlytherArtifactBuilder {
         /** The folder the artifacts are built into, relative to where the scripts run. */
         private readonly artifacts: string,
         private readonly generator: SlytherGenerator,
-        private readonly options: { attempts?: number; log?: (line: string) => void } = {},
+        /** attempts: how many times a script may be fixed; log: prints a finished line; say: names what is being waited on. */
+        private readonly options: { attempts?: number; log?: (line: string) => void; say?: (label: string) => void } = {},
     ) {}
 
     /**
@@ -56,8 +58,21 @@ export class SlytherArtifactBuilder {
             }
         }
 
+        const reasons = new Map<string, string | null>();
+
         for (const entry of desired) {
-            const reason = await this.reasonToBuild(entry);
+            reasons.set(entry.path, await this.reasonToBuild(entry));
+        }
+
+        const pending = desired.filter((entry) => reasons.get(entry.path) !== null);
+        const scripts = pending.filter((entry) => entry.script !== undefined).length;
+
+        if (pending.length > 0) {
+            this.options.log?.(`${pending.length} of ${desired.length} artifact files to build, ${scripts} with the llm`);
+        }
+
+        for (const entry of desired) {
+            const reason = reasons.get(entry.path)!;
 
             this.manifest.operations[`${entry.kind}::${entry.operation}`] = entry.record;
 
@@ -66,10 +81,16 @@ export class SlytherArtifactBuilder {
                 continue;
             }
 
-            this.options.log?.(`${entry.path}: ${reason}`);
-            await (entry.script ? this.buildScript(entry) : this.write(entry.path, entry.content!, entry.inputHash));
+            const started = Date.now();
+            const status = reason === "new" ? "built" : "rebuilt";
+
+            this.options.say?.(`${entry.path}: writing`);
+
+            const fixes = entry.script ? await this.buildScript(entry) : (await this.write(entry.path, entry.content!, entry.inputHash), 0);
+
             await this.manifest.save();
-            report.push({ path: entry.path, status: reason === "new" ? "built" : "rebuilt" });
+            this.options.log?.(`${status} ${entry.path}: ${reason} (${StringUtils.duration(Date.now() - started)}${fixes > 0 ? `, ${fixes} fix${fixes === 1 ? "" : "es"}` : ""})`);
+            report.push({ path: entry.path, status });
         }
 
         await this.writeIgnore(kinds);
@@ -159,10 +180,14 @@ export class SlytherArtifactBuilder {
         return SlytherArtifactManifest.hashOf(content) === recorded.outputHash ? null : "it was edited by hand";
     }
 
-    /** Generates the script of the entry, verifying and fixing it until it passes or the attempts run out. */
-    private async buildScript(entry: SlytherArtifactBuilder["entry"]): Promise<void> {
+    /** Generates the script of the entry, verifying and fixing it until it passes or the attempts run out. Returns how many fixes it took. */
+    private async buildScript(entry: SlytherArtifactBuilder["entry"]): Promise<number> {
         const script = entry.script!;
         const operation = script.kind.operations.find((candidate) => SlytherArtifactBuilder.shortOf(candidate.artifact.name) === script.operation)!;
+        const attempts = this.options.attempts ?? SlytherArtifactBuilder.ATTEMPTS;
+
+        this.options.say?.(`${entry.path}: asking the llm (attempt 1 of ${attempts})`);
+
         let reply = await this.generator.generate({
             instructions: this.instructionsOf(script.kind, operation, script.step, script.stepName, entry.path, script.runtime, entry.record),
             context: this.contextOf(script.kinds, script.kind, operation, script.step),
@@ -175,6 +200,7 @@ export class SlytherArtifactBuilder {
 
             await this.write(entry.path, file.content, entry.inputHash, reply.dependencies);
             await this.install(script.runtime);
+            this.options.say?.(`${entry.path}: verifying`);
 
             const failure = await new SlytherVerifier(this.cwd).verify({
                 operation: script.operation,
@@ -185,16 +211,17 @@ export class SlytherArtifactBuilder {
             });
 
             if (failure === null) {
-                return;
+                return attempt - 1;
             }
 
-            if (attempt >= (this.options.attempts ?? SlytherArtifactBuilder.ATTEMPTS)) {
+            if (attempt >= attempts) {
                 delete this.manifest.files[entry.path];
                 await this.manifest.save();
                 throw new Error(`${entry.path} failed verification ${attempt} times:\n${failure}`);
             }
 
-            this.options.log?.(`${entry.path}: attempt ${attempt} failed, fixing`);
+            this.options.log?.(`${entry.path}: attempt ${attempt} failed verification:\n${failure.trim().split("\n").map((line) => `    ${line}`).join("\n")}`);
+            this.options.say?.(`${entry.path}: asking the llm to fix it (attempt ${attempt + 1} of ${attempts})`);
             reply = await this.generator.fix(reply.session, failure, [entry.path]);
         }
     }
@@ -238,7 +265,9 @@ export class SlytherArtifactBuilder {
             await writeFile(target, content);
         }
 
-        this.options.log?.(`installing the ${runtime.lang} dependencies`);
+        const started = Date.now();
+
+        this.options.say?.(`installing the ${runtime.lang} dependencies (${command.join(" ")})`);
 
         const result = await ProcessUtils.run(command, { cwd: this.cwd });
 
@@ -246,6 +275,7 @@ export class SlytherArtifactBuilder {
             throw new Error(`Installing the ${runtime.lang} dependencies failed:\n${result.stderr || result.stdout}`);
         }
 
+        this.options.log?.(`installed the ${runtime.lang} dependencies (${StringUtils.duration(Date.now() - started)})`);
         this.installed.set(runtime.lang, content);
     }
 
