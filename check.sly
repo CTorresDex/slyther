@@ -6,6 +6,8 @@ class SlytherInstanceManifest {
     What a check remembers about every instance, written as manifest.json in .slyther/instances and keyed
     by `kind:name`, contains for each one:
 
+    - specHash: The hash of the #{Compiler::SlytherArtifact} that declares the instance, so a change to its
+      prose or its args is noticed
     - contentHash: The hash of the segments locate prints, each as its path and its content, sorted, so
       where a segment is never matters, only what it holds. The content of a folder is its listing, one
       entry per line with a slash after the folders, so it changes with its structure and not with its files
@@ -28,10 +30,18 @@ class SlytherInstanceChecker {
     references with \#{} are its dependencies. Instances are checked in an order where every one comes
     after its dependencies, so a dependency is evaluated, and fixed, before what depends on it.
 
-    For every instance, locate says where it is: when it exits 1 the instance is missing and nothing
-    else is done. Otherwise its content hash, its signature and what it uses are computed, and it is
-    evaluated again when it was never evaluated, when its content hash changed, when what evaluates it
-    changed, or when a dependency changed in a way it uses: for a dependency, the signature it had when
+    It runs in one of two modes: with compile it is a compiler, and brings every instance in line with
+    its declaration; without it, nothing touches the code, so it only evaluates and reports.
+
+    For every instance, locate says where it is: when it exits 1 the instance is missing, and, with
+    compile, when its kind has a create operation, it is created and then evaluated, otherwise nothing
+    else is done. Otherwise its content hash, its signature and what it uses are computed, and, when its
+    spec hash changed and compile is on and its kind has an update operation, it is updated and then
+    evaluated, since its declaration rules over its code. Else it is evaluated again when it was never
+    evaluated, when its spec hash or its content hash changed, when what evaluates it changed, when it
+    failed last time and compile is on, or when a dependency changed in a way it uses. Without compile, a
+    spec hash that changed is not recorded as seen, so a later build still updates the instance. For a
+    dependency, the signature it had when
     this instance was evaluated is compared with the one it has now, key by key, into the keys whose
     shape changed or that are gone, and the keys that are new. What the instance uses of the dependency
     decides: a key, when that key changed; `*`, when any key changed; `**`, when any key changed or was
@@ -42,11 +52,21 @@ class SlytherInstanceChecker {
 
     Evaluating runs the evaluate operation of the kind: every deterministic step as its script with the
     id, failing with what it prints when it exits with a code other than 0, then every llm step as its
-    markdown followed by the segments of the instance, asked from the generator for a verdict of pass
-    and errors. With fix, an instance that fails is updated with the update operation of its kind, the id
-    as its param named id and the errors as any other param, as scripts, or as its markdown executed by
-    the generator with the errors appended, and evaluated once more. With max, checking refuses to
-    evaluate more instances with the llm than allowed, before evaluating any.
+    markdown followed by what the instance must do, its args and its prose as declared, and the segments
+    of its code, asked from the generator for a verdict of pass and errors. With compile, an instance
+    that fails is updated with the update operation of its kind and evaluated once more.
+
+    Create and update run with their params filled from the instance, by the name of each param: id is
+    the name of the instance, errors is the errors it is run to fix, a param named as an arg of the
+    instance is the value of that arg, and any other is the prose of the instance; a param that is not
+    optional and gets nothing must throw an error. A deterministic one runs its scripts in order and
+    throws when one fails; any other is its markdown, with the params substituted and the errors
+    appended when there are any, executed by the generator. After either, the instance is located again.
+
+    What passes is reported as created, updated, fixed or pass, by what was done to it; what fails as
+    fail; what is up to date as kept; and what is missing and cannot be created as missing. With max,
+    checking refuses to create, update or evaluate more instances with the llm than allowed, before
+    doing any.
 
     Every id list prints that the script does not declare is reported as a warning.
 }

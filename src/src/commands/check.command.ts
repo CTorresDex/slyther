@@ -2,18 +2,18 @@ import { Progress } from '../classes/Progress.class.ts'
 import { SlytherProject } from '../classes/SlytherProject.class.ts'
 
 export const help = {
-    short: 'Check that every declared artifact complies with the rules of its kind',
-    long: `Usage: slyther check [--fix] [--max <n>]
+    short: 'Check that every declared instance complies with its declaration and the rules of its kind',
+    long: `Usage: slyther check [--max <n>]
 
-Builds the project, then checks every artifact the scripts declare whose kind has operations: locates it
-in the code, and evaluates it with the evaluate operation of its kind when it was never evaluated, when
-its code changed, when what evaluates it changed, or when an artifact it references changed in a way it
-uses. What it finds is recorded in ${SlytherProject.OUTPUT}/${SlytherProject.INSTANCES}, so the next check
-only evaluates what changed. Exits 1 when any artifact fails or is missing.
+Builds the operations of every kind, then checks every instance the scripts declare whose kind has
+operations, without touching the code: locates it in ${SlytherProject.OUTPUT}/${SlytherProject.SOURCE}, and evaluates it
+with the evaluate operation of its kind when it was never evaluated, when its declaration or its code
+changed, when what evaluates it changed, or when an instance it references changed in a way it uses.
+What it finds is recorded in ${SlytherProject.OUTPUT}/${SlytherProject.INSTANCES}, so the next check only evaluates
+what changed. Exits 1 when any instance fails or is missing; run build to create and update them.
 
 Flags:
-  --fix        update every artifact that fails with the update operation of its kind, and evaluate it again
-  --max <n>    refuse to evaluate more than n artifacts with the LLM in one run`,
+  --max <n>    refuse to evaluate more than n instances with the LLM in one run`,
 }
 
 export default async function (args: string[], context: { flags: Record<string, string | boolean> }) {
@@ -22,7 +22,7 @@ export default async function (args: string[], context: { flags: Record<string, 
     if (max !== undefined && !Number.isInteger(max)) throw new Error('--max takes a whole number')
 
     const report = await Progress.of('Checking').run(async (progress) =>
-        new SlytherProject(process.cwd(), undefined, (line) => progress.log(line)).check({ fix: context.flags.fix === true, max }),
+        new SlytherProject(process.cwd(), undefined, (line) => progress.log(line)).check({ max }),
     )
     const failed = report.filter((entry) => entry.status === 'fail' || entry.status === 'missing')
 
@@ -31,7 +31,7 @@ export default async function (args: string[], context: { flags: Record<string, 
         for (const error of entry.errors) console.log(`          - ${error}`)
     }
 
-    console.log(`${report.length - failed.length} of ${report.length} artifacts comply`)
+    console.log(`${report.length - failed.length} of ${report.length} instances comply`)
 
     process.exitCode = failed.length > 0 ? 1 : 0
 }

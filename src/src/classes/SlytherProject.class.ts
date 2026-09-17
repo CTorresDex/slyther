@@ -63,11 +63,19 @@ export class SlytherProject {
         return join("..", SlytherProject.ARTIFACTS);
     }
 
-    /** Builds the project: parses it, then builds the operations of its kinds. Returns what it did to every file. */
-    async build(): Promise<{ path: string; status: "built" | "rebuilt" | "kept" | "removed" }[]> {
+    /**
+     * Compiles the project: parses it, builds the operations of its kinds, then brings every instance
+     * its scripts declare in line with its declaration, creating what is missing, updating what is
+     * outdated or fails, and evaluating it. Returns what it did to every file and to every instance.
+     */
+    async build(options: { max?: number } = {}): Promise<{
+        files: { path: string; status: "built" | "rebuilt" | "kept" | "removed" }[];
+        instances: Awaited<ReturnType<SlytherProject["checkInstances"]>>;
+    }> {
         const { parsed, path } = await this.parse();
+        const files = [{ path, status: "built" as const }, ...(await this.buildArtifacts(parsed))];
 
-        return [{ path, status: "built" as const }, ...(await this.buildArtifacts(parsed))];
+        return { files, instances: await this.checkInstances(parsed, { ...options, compile: true }) };
     }
 
     /** Parses the entry point and writes its JSON representation to the build folder as parser.json. */
@@ -103,25 +111,27 @@ export class SlytherProject {
     }
 
     /**
-     * Builds the project, then checks every artifact its scripts declare against the rules of its kind,
-     * evaluating again only what changed. Returns what happened to every artifact.
+     * Builds the operations of the kinds, then checks every instance its scripts declare against its
+     * declaration and the rules of its kind, evaluating again only what changed and touching no code.
+     * Returns what happened to every instance.
      */
-    async check(options: { fix?: boolean; max?: number } = {}): Promise<Awaited<ReturnType<SlytherProject["checkInstances"]>>> {
+    async check(options: { max?: number } = {}): Promise<Awaited<ReturnType<SlytherProject["checkInstances"]>>> {
         const { parsed } = await this.parse();
 
         await this.buildArtifacts(parsed);
 
-        return this.checkInstances(parsed, options);
+        return this.checkInstances(parsed, { ...options, compile: false });
     }
 
     /**
-     * Checks every artifact the parsed script declares whose kind has operations with the operations as
-     * built, recording what it finds in the instances folder so the next check evaluates only what changed.
+     * Checks every instance the parsed script declares whose kind has operations with the operations as
+     * built, recording what it finds in the instances folder so the next check evaluates only what
+     * changed. With compile, it also creates what is missing and updates what is outdated or fails.
      */
     async checkInstances(
         parsed: ParsedSlytherScript,
-        options: { fix?: boolean; max?: number } = {},
-    ): Promise<{ key: string; status: "pass" | "fail" | "missing" | "kept" | "fixed"; reason?: string; errors: string[] }[]> {
+        options: { compile?: boolean; max?: number } = {},
+    ): Promise<{ key: string; status: "created" | "updated" | "fixed" | "pass" | "fail" | "missing" | "kept"; reason?: string; errors: string[] }[]> {
         const built = await SlytherArtifactManifest.load(join(this.src, this.artifactsDir, SlytherArtifactManifest.FILE));
         await mkdir(this.src, { recursive: true });
 

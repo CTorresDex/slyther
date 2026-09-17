@@ -13,6 +13,8 @@ export class SlytherInstanceManifest {
         readonly instances: Record<
             string,
             {
+                /** The hash of the artifact that declares the instance, so a change to its prose or args is noticed. */
+                specHash: string;
                 /** The hash of the code of the instance, as located, without where it is. */
                 contentHash: string;
                 /** The `key shape` lines of the instance when it was checked, if its kind prints them. */

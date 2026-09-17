@@ -18,8 +18,11 @@ command init {
 }
 
 command build {
-    Builds the current #{Project::SlytherProject} using the #{Project::SlytherProject::build} method and prints
-    what it did to every file
+    Input: the --max flag
+
+    Compiles the current #{Project::SlytherProject} using the #{Project::SlytherProject::build} method, prints
+    what it did to every file and what happened to every instance with its errors, and exits 1 when any
+    instance fails or is missing
 }
 
 command run {
@@ -29,8 +32,9 @@ command run {
     its code. With --execute, an operation that is not deterministic runs through a #{Build::ClaudeCLIGenerator}
 }
 command check {
-    Input: the --fix and --max flags
+    Input: the --max flag
 
-    Checks the current #{Project::SlytherProject} using the #{Project::SlytherProject::check} method, prints what
-    happened to every artifact with its errors, and exits 1 when any fails or is missing
+    Checks the current #{Project::SlytherProject} using the #{Project::SlytherProject::check} method, without
+    touching its code, prints what happened to every instance with its errors, and exits 1 when any fails or
+    is missing
 }

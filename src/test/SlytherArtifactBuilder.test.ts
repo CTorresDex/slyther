@@ -231,7 +231,7 @@ describe("SlytherProject run", () => {
         const printed = await project.run("k", "create", ["a", "hello"]);
 
         expect(printed.code).toBe(0);
-        expect(printed.output).toContain('sh .slyther/artifacts/k/create/scaffold.sh "a" "hello"');
+        expect(printed.output).toContain('sh ../artifacts/k/create/scaffold.sh "a" "hello"');
 
         const executed = await project.run("k", "create", ["a", "hello"], { execute: new FakeGenerator({}) });
 

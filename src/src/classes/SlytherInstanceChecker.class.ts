@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ProcessUtils } from "./ProcessUtils.class.ts";
+import type { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import type { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
 import type { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
@@ -20,6 +21,8 @@ export class SlytherInstanceChecker {
     private static readonly SEGMENT = /^(.+?)(?::(\d+)-(\d+))?$/;
     /** How the reason of an instance that uses a key that is gone ends. */
     private static readonly GONE = ", which no longer exists";
+    /** The reason of an instance whose declaration changed, so it is updated rather than evaluated. */
+    private static readonly SPEC = "its spec changed";
 
     private manifest!: SlytherInstanceManifest;
 
@@ -32,24 +35,28 @@ export class SlytherInstanceChecker {
         private readonly path: string,
         private readonly built: SlytherArtifactManifest,
         private readonly generator: SlytherGenerator,
-        private readonly options: { fix?: boolean; max?: number; log?: (line: string) => void } = {},
+        private readonly options: { compile?: boolean; max?: number; log?: (line: string) => void } = {},
     ) {}
 
     /**
      * Checks every instance declared in the script whose kind has operations: locates it, decides
-     * whether it must be evaluated again, from its own code, the scripts it is evaluated with and what
-     * it uses of the instances it references, evaluates it when it must, in an order where every
-     * instance comes after the ones it references, and records the outcome. With fix, an instance that
-     * fails is updated and evaluated once more. Returns what happened to every instance.
+     * whether it must be evaluated again, from its own spec, its own code, the scripts it is evaluated
+     * with and what it uses of the instances it references, evaluates it when it must, in an order where
+     * every instance comes after the ones it references, and records the outcome.
+     *
+     * With compile, it is a compiler: an instance that is missing is created with the create operation
+     * of its kind, one whose spec changed is updated with its update operation, and one that fails
+     * evaluation, or failed last time, is updated with the errors and evaluated once more. Without it,
+     * nothing touches the code. Returns what happened to every instance.
      */
     async check(
         parsed: ParsedSlytherScript,
         kinds: SlytherArtifactKind[],
-    ): Promise<{ key: string; status: "pass" | "fail" | "missing" | "kept" | "fixed"; reason?: string; errors: string[] }[]> {
+    ): Promise<{ key: string; status: "created" | "updated" | "fixed" | "pass" | "fail" | "missing" | "kept"; reason?: string; errors: string[] }[]> {
         this.manifest = await SlytherInstanceManifest.load(this.path);
 
         const instances = this.instancesOf(parsed, kinds);
-        const report: { key: string; status: "pass" | "fail" | "missing" | "kept" | "fixed"; reason?: string; errors: string[] }[] = [];
+        const report: Awaited<ReturnType<SlytherInstanceChecker["check"]>> = [];
 
         for (const key of Object.keys(this.manifest.instances)) {
             if (!instances.has(key)) {
@@ -66,60 +73,68 @@ export class SlytherInstanceChecker {
         await this.warnUndeclared(kinds, instances);
 
         const order = SlytherInstanceChecker.orderOf(instances, states);
-        const pending = order.filter((key) => {
-            const state = states.get(key)!;
-
-            return state.segments !== undefined && this.reasonToEvaluate(key, state, states) !== null;
-        });
-        const llm = pending.filter((key) => !this.built.operations[`${instances.get(key)!.kind}::evaluate`]?.deterministic).length;
+        const pending = order.filter((key) => this.workOf(key, instances.get(key)!, states) !== null);
+        const llm = pending.filter((key) => this.needsLlm(instances.get(key)!.kind, this.workOf(key, instances.get(key)!, states)!)).length;
 
         if (this.options.max !== undefined && llm > this.options.max) {
-            throw new Error(`${llm} instances need an evaluation with the llm, more than the ${this.options.max} allowed: raise --max or narrow the change.`);
+            throw new Error(`${llm} instances need the llm, more than the ${this.options.max} allowed: raise --max or narrow the change.`);
         }
 
         if (pending.length > 0) {
-            this.options.log?.(`${pending.length} of ${instances.size} instances need evaluating, ${llm} with the llm`);
+            this.options.log?.(`${pending.length} of ${instances.size} instances need work, ${llm} with the llm`);
         }
 
         for (const key of order) {
             const instance = instances.get(key)!;
             let state = states.get(key)!;
+            const work = this.workOf(key, instance, states);
 
-            if (state.segments === undefined) {
-                this.manifest.instances[key] = { ...SlytherInstanceChecker.emptyRecord(), result: "missing", errors: [] };
-                report.push({ key, status: "missing", errors: [] });
+            if (work === null) {
+                const record = this.manifest.instances[key];
+
+                if (state.segments === undefined) {
+                    this.manifest.instances[key] = { ...SlytherInstanceChecker.emptyRecord(), specHash: instance.artifact.hash };
+                    report.push({ key, status: "missing", errors: [] });
+                } else if (record?.result === "fail") {
+                    report.push({ key, status: "fail", reason: "unchanged since it failed", errors: record.errors });
+                } else {
+                    report.push({ key, status: "kept", errors: [] });
+                }
+
                 continue;
             }
 
-            const reason = this.reasonToEvaluate(key, state, states);
+            this.options.log?.(`${key}: ${work.reason}`);
 
-            if (reason === null) {
-                const record = this.manifest.instances[key]!;
+            let verdict: { pass: boolean; errors: string[] };
+            let status: Awaited<ReturnType<SlytherInstanceChecker["check"]>>[number]["status"];
 
-                report.push(
-                    record.result === "fail"
-                        ? { key, status: "fail", reason: "unchanged since it failed", errors: record.errors }
-                        : { key, status: "kept", errors: [] },
-                );
-                continue;
+            if (work.operation) {
+                this.options.log?.(`${key}: ${work.operation === "create" ? "creating" : "updating"}`);
+                await this.perform(work.operation, instance, key, []);
+                state = await this.relocate(key, instance, states);
+                verdict =
+                    state.segments === undefined
+                        ? { pass: false, errors: [work.operation === "create" ? "the create did not produce it" : "the update removed it"] }
+                        : await this.evaluate(instance, key, state);
+            } else {
+                verdict = work.broken ? { pass: false, errors: [work.reason] } : await this.evaluate(instance, key, state);
             }
 
-            this.options.log?.(`${key}: ${reason.text}`);
+            status = verdict.pass ? work.done : "fail";
 
-            let verdict = reason.broken ? { pass: false, errors: [reason.text] } : await this.evaluate(instance, key, state);
-            let status: "pass" | "fail" | "fixed" = verdict.pass ? "pass" : "fail";
-
-            if (!verdict.pass && this.options.fix && this.built.operations[`${instance.kind}::update`]) {
-                this.options.log?.(`${key}: updating`);
-                await this.update(instance, key, verdict.errors);
-                state = await this.stateOf(key, instance);
-                states.set(key, state);
+            if (!verdict.pass && this.options.compile && state.segments !== undefined && this.has(instance.kind, "update")) {
+                this.options.log?.(`${key}: updating to fix ${verdict.errors.length} error${verdict.errors.length === 1 ? "" : "s"}`);
+                await this.perform("update", instance, key, verdict.errors);
+                state = await this.relocate(key, instance, states);
                 verdict = state.segments === undefined ? { pass: false, errors: ["the update removed it"] } : await this.evaluate(instance, key, state);
-                status = verdict.pass ? "fixed" : "fail";
+                status = verdict.pass ? (work.done === "pass" ? "fixed" : work.done) : "fail";
             }
 
+            // Without compile, a spec that changed is not recorded as seen, so a later build still updates it.
             this.manifest.instances[key] = {
-                contentHash: state.contentHash!,
+                specHash: this.options.compile || !this.manifest.instances[key] ? instance.artifact.hash : this.manifest.instances[key].specHash,
+                contentHash: state.contentHash ?? "",
                 ...(state.signature ? { signature: state.signature } : {}),
                 dependencies: Object.fromEntries(
                     instance.references.map((reference) => {
@@ -133,7 +148,7 @@ export class SlytherInstanceChecker {
                 errors: verdict.errors,
             };
             await this.manifest.save();
-            report.push({ key, status, reason: reason.text, errors: verdict.errors });
+            report.push({ key, status, reason: work.reason, errors: verdict.errors });
         }
 
         await this.manifest.save();
@@ -141,17 +156,57 @@ export class SlytherInstanceChecker {
         return report;
     }
 
+    /**
+     * What an instance needs: why, the operation to run before evaluating it, if any, what to report
+     * when it passes, and whether it is certainly broken. Null when nothing is to be done: it is up to
+     * date, or it is missing and cannot be created.
+     */
+    private workOf(
+        key: string,
+        instance: { kind: string; artifact: SlytherArtifact },
+        states: Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>,
+    ): { reason: string; operation?: "create" | "update"; done: "created" | "updated" | "pass"; broken: boolean } | null {
+        const state = states.get(key)!;
+
+        if (state.segments === undefined) {
+            return this.options.compile && this.has(instance.kind, "create") ? { reason: "missing", operation: "create", done: "created", broken: false } : null;
+        }
+
+        const reason = this.changeOf(key, instance, state, states);
+
+        if (reason === null) {
+            return null;
+        }
+
+        if (reason === SlytherInstanceChecker.SPEC && this.options.compile && this.has(instance.kind, "update")) {
+            return { reason, operation: "update", done: "updated", broken: false };
+        }
+
+        return { reason, done: "pass", broken: reason.endsWith(SlytherInstanceChecker.GONE) };
+    }
+
+    /** Whether the work on an instance of the kind asks the llm: its operation, or its evaluate, is not deterministic. */
+    private needsLlm(kind: string, work: { operation?: "create" | "update" }): boolean {
+        const operations = [work.operation, "evaluate"].filter((name) => name !== undefined);
+
+        return operations.some((name) => this.built.operations[`${kind}::${name}`]?.deterministic === false);
+    }
+
+    private has(kind: string, operation: string): boolean {
+        return this.built.operations[`${kind}::${operation}`] !== undefined;
+    }
+
     /** The instances: every artifact whose kind has operations, with the ones it references among them. */
     private instancesOf(
         parsed: ParsedSlytherScript,
         kinds: SlytherArtifactKind[],
-    ): Map<string, { kind: string; name: string; references: string[] }> {
+    ): Map<string, { kind: string; name: string; artifact: SlytherArtifact; references: string[] }> {
         const checkable = new Set(kinds.filter((kind) => kind.operations.length > 0).map((kind) => kind.name));
-        const instances = new Map<string, { kind: string; name: string; references: string[] }>();
+        const instances = new Map<string, { kind: string; name: string; artifact: SlytherArtifact; references: string[] }>();
 
         for (const artifact of parsed.artifacts) {
             if (checkable.has(artifact.artifact)) {
-                instances.set(`${artifact.artifact}:${artifact.name}`, { kind: artifact.artifact, name: artifact.name, references: [] });
+                instances.set(`${artifact.artifact}:${artifact.name}`, { kind: artifact.artifact, name: artifact.name, artifact, references: [] });
             }
         }
 
@@ -229,31 +284,39 @@ export class SlytherInstanceChecker {
             .join("\n");
     }
 
-    /**
-     * Why the instance must be evaluated again: it never was, its code changed, what evaluates it
-     * changed, or an instance it references changed in a way it uses. Broken when it uses a key that
-     * is gone, so it fails without being evaluated. Null when it is up to date.
-     */
-    private reasonToEvaluate(
+    /** Locates the instance again after an operation changed it, and remembers what it found for the instances that reference it. */
+    private async relocate(
         key: string,
-        state: Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>,
+        instance: { kind: string; name: string },
         states: Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>,
-    ): { text: string; broken: boolean } | null {
-        const reason = this.changeOf(key, state, states);
+    ): Promise<Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>> {
+        const state = await this.stateOf(key, instance);
 
-        return reason === null ? null : { text: reason, broken: reason.endsWith(SlytherInstanceChecker.GONE) };
+        states.set(key, state);
+
+        return state;
     }
 
+    /**
+     * Why the instance must be evaluated again: it never was, its spec changed, its code changed, what
+     * evaluates it changed, or an instance it references changed in a way it uses. A reason that ends
+     * as GONE means it uses a key that is gone, so it is certainly broken. Null when it is up to date.
+     */
     private changeOf(
         key: string,
+        instance: { kind: string; artifact: SlytherArtifact },
         state: Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>,
         states: Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>,
     ): string | null {
         const record = this.manifest.instances[key];
-        const [kind] = key.split(":") as [string];
+        const { kind } = instance;
 
         if (!record || record.result === "missing") {
             return "never evaluated";
+        }
+
+        if (record.specHash !== instance.artifact.hash) {
+            return SlytherInstanceChecker.SPEC;
         }
 
         if (record.contentHash !== state.contentHash) {
@@ -303,12 +366,15 @@ export class SlytherInstanceChecker {
             }
         }
 
-        return record.result === "fail" && this.options.fix ? "it failed last time" : null;
+        return record.result === "fail" && this.options.compile ? "it failed last time" : null;
     }
 
-    /** Runs the evaluate operation of the kind on the instance: its scripts, then its prompts through the generator. */
+    /**
+     * Runs the evaluate operation of the kind on the instance: its scripts with the id, then its prompts
+     * through the generator, each followed by what the instance must do, as declared, and its code.
+     */
     private async evaluate(
-        instance: { kind: string; name: string },
+        instance: { kind: string; name: string; artifact: SlytherArtifact },
         key: string,
         state: Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>,
     ): Promise<{ pass: boolean; errors: string[] }> {
@@ -333,7 +399,13 @@ export class SlytherInstanceChecker {
                 await readFile(join(this.cwd, this.artifacts, step.path), "utf-8"),
                 `## The ${instance.kind} to evaluate: ${instance.name}`,
                 "",
-                ...state.segments!.map((segment) => `### ${segment.path}\n\n\`\`\`\n${segment.content}\n\`\`\``),
+                "### What it must do",
+                "",
+                SlytherInstanceChecker.specOf(instance.artifact),
+                "",
+                "### Its code",
+                "",
+                ...state.segments!.map((segment) => `#### ${segment.path}\n\n\`\`\`\n${segment.content}\n\`\`\``),
                 "",
                 "Reply with `pass` true when it complies with everything above, else false with one entry in `errors` per discrepancy.",
             ].join("\n");
@@ -348,19 +420,20 @@ export class SlytherInstanceChecker {
     }
 
     /**
-     * Runs the update operation of the kind on the instance, with the id as the param named id and the
-     * errors as any other param: its scripts, or its markdown through the generator with the tools.
+     * Runs the create or update operation of the kind on the instance, with its params filled from the
+     * instance: its scripts in order, or its markdown through the generator with the tools, followed by
+     * the errors it is run to fix, when there are any.
      */
-    private async update(instance: { kind: string; name: string }, key: string, errors: string[]): Promise<void> {
-        const operation = this.built.operations[`${instance.kind}::update`]!;
-        const args = operation.params.map((param) => (param.name === "id" ? instance.name : errors.join("\n")));
+    private async perform(name: "create" | "update", instance: { kind: string; name: string; artifact: SlytherArtifact }, key: string, errors: string[]): Promise<void> {
+        const operation = this.built.operations[`${instance.kind}::${name}`]!;
+        const args = SlytherInstanceChecker.argsOf(operation, instance, key, errors);
 
         if (operation.deterministic) {
             for (const step of operation.steps) {
                 const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd });
 
                 if (result.code !== 0) {
-                    throw new Error(`Updating ${key} failed:\n${result.stderr || result.stdout}`);
+                    throw new Error(`${name === "create" ? "Creating" : "Updating"} ${key} failed:\n${result.stderr || result.stdout}`);
                 }
             }
 
@@ -373,7 +446,43 @@ export class SlytherInstanceChecker {
             markdown = markdown.replaceAll(`{${param.name}}`, args[index]!);
         });
 
-        await this.generator.execute(`${markdown}\n## Why it failed evaluation\n\n${errors.map((error) => `- ${error}`).join("\n")}\n`, this.cwd);
+        if (errors.length > 0) {
+            markdown = `${markdown}\n## Why it failed evaluation\n\n${errors.map((error) => `- ${error}`).join("\n")}\n`;
+        }
+
+        await this.generator.execute(markdown, this.cwd);
+    }
+
+    /**
+     * The args an operation is run with for an instance, one per param, by the name of the param: id is
+     * the name of the instance, errors is the errors it is run to fix, a param named as an arg of the
+     * instance is the value of that arg, and any other is the prose of the instance. Throws when a
+     * param that is not optional gets nothing.
+     */
+    private static argsOf(
+        operation: SlytherArtifactManifest["operations"][string],
+        instance: { name: string; artifact: SlytherArtifact },
+        key: string,
+        errors: string[],
+    ): string[] {
+        return operation.params.map((param) => {
+            const arg = instance.artifact.args.find((candidate) => candidate.name === param.name);
+            const value =
+                param.name === "id" ? instance.name : param.name === "errors" ? errors.join("\n") : arg !== undefined ? String(arg.value) : instance.artifact.content;
+
+            if (value === "" && !param.optional && param.name !== "errors") {
+                throw new Error(`${key} gives nothing for the param "${param.name}" of ${operation.kind}::${operation.name}: declare it as an arg, or write it as the prose of the instance.`);
+            }
+
+            return value;
+        });
+    }
+
+    /** The instance as declared, for the generator to read: its args, one per line, and its prose. */
+    private static specOf(artifact: SlytherArtifact): string {
+        const args = artifact.args.map((arg) => `- ${arg.name}: ${String(arg.value)}`);
+
+        return [...args, ...(args.length > 0 && artifact.content ? [""] : []), artifact.content || "(no further description)"].join("\n");
     }
 
     /** The hash of every script and prompt that takes part in evaluating an instance of the kind. */
@@ -494,6 +603,6 @@ export class SlytherInstanceChecker {
     }
 
     private static emptyRecord(): SlytherInstanceManifest["instances"][string] {
-        return { contentHash: "", dependencies: {}, evaluatedWith: "", result: "missing", errors: [] };
+        return { specHash: "", contentHash: "", dependencies: {}, evaluatedWith: "", result: "missing", errors: [] };
     }
 }

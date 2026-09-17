@@ -19,8 +19,14 @@ class SlytherProject {
 }
 
 method SlytherProject::build {
+    Compiles the project, given the max option:
+
     Executes the #{SlytherProject::parse} method
     Executes the #{SlytherProject::buildArtifacts} method
+    Executes the #{SlytherProject::checkInstances} method with compile, so what is missing is created and what
+    is outdated or fails is updated
+
+    Returns what it did to every file and what happened to every instance
 }
 
 method SlytherProject::parse {
@@ -44,12 +50,15 @@ method SlytherProject::run {
     it, hands the markdown to it and returns its reply.
 }
 method SlytherProject::check {
+    Checks the project without touching its code, given the max option:
+
     Executes the #{SlytherProject::parse} method
     Executes the #{SlytherProject::buildArtifacts} method
-    Executes the #{SlytherProject::checkInstances} method
+    Executes the #{SlytherProject::checkInstances} method without compile
 }
 
 method SlytherProject::checkInstances {
-    Checks every artifact the parsed script declares with #{Check::SlytherInstanceChecker}, given the fix and
-    max options, and returns what happened to every one: pass, fail, missing, kept or fixed, with its errors
+    Checks every instance the parsed script declares with #{Check::SlytherInstanceChecker}, given the compile
+    and max options, and returns what happened to every one: created, updated, fixed, pass, fail, missing or
+    kept, with its reason and its errors
 }
