@@ -80,15 +80,18 @@ class SlytherArtifactKind {
     and starting at 1. A folder stands for its structure, what it holds directly, and not for the content
     of its files: a kind that cares about some of them prints them as segments of their own.
 
-    A kind with operations also has every #{SlytherBuiltinOperation}, added after the ones written,
+    A kind with operations also has the #{SlytherBuiltinOperation} it is due, added after the ones written,
     unless it declares an operation of the same name, which replaces the built-in one.
 }
 
 class SlytherBuiltinOperation {
-    A deterministic operation every kind with operations has without declaring it, so Slyther can
-    generate it from the rules of the kind. Each one is a #{SlytherArtifact} of kind operation named
-    `Kind::name` with the params, the deterministic qualifier and the content that follow, and no
-    references, so its closure hash and scope hash are its own hash. They are:
+    A deterministic operation a kind with operations has without declaring it, so Slyther can generate
+    it from the rules of the kind. Each one is a #{SlytherArtifact} of kind operation named `Kind::name`
+    with the params, the deterministic qualifier and the content that follow, and no references, so its
+    closure hash and scope hash are its own hash. Every kind with operations has list; signature and uses
+    only serve to decide whether the artifacts that reference an instance of the kind must be evaluated
+    again, so a kind only has them once some artifact references one of its instances, other than
+    itself, and a kind nobody references is not asked for them. They are:
 
     - list (): Prints the id of every artifact of the kind that exists, one per line, and exits 0
     - signature (id: string): Prints the public shape of the artifact, one member per line as `key shape`,

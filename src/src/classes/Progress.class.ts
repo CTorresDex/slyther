@@ -1,4 +1,5 @@
 // Imports
+import { StringUtils } from "./StringUtils.class.ts";
 
 export class Progress {
     /** The frames of the animation, in the order they are drawn. */
@@ -8,8 +9,13 @@ export class Progress {
     /** Returns the cursor to the start of the line and clears it. */
     private static readonly CLEAR = "\r[2K";
 
+    /** How long a wait is before the indicator starts saying how long it has been. */
+    private static readonly PATIENCE = 10_000;
+
     private timer: ReturnType<typeof setInterval> | null = null;
     private frame = 0;
+    /** When the current label was set, so a long wait shows its duration. */
+    private since = Date.now();
 
     private constructor(private label: string) {}
 
@@ -32,6 +38,7 @@ export class Progress {
     /** Changes what the indicator says it is waiting on. */
     say(label: string): void {
         this.label = label;
+        this.since = Date.now();
         this.draw();
     }
 
@@ -70,8 +77,10 @@ export class Progress {
             return;
         }
 
+        const waited = Date.now() - this.since;
+
         this.erase();
-        process.stderr.write(`${Progress.FRAMES[this.frame]} ${this.label}`);
+        process.stderr.write(`${Progress.FRAMES[this.frame]} ${this.label}${waited >= Progress.PATIENCE ? ` · ${StringUtils.duration(waited)}` : ""}`);
     }
 
     private erase(): void {

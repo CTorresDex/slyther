@@ -71,6 +71,8 @@ describe("ClaudeCLIGenerator", () => {
             "claude", "-p", "--output-format", "json", "--json-schema", '{"type":"object"}', "--tools", "", "--resume", "abc", "--model", "opus",
         ]);
         expect(ClaudeCLIGenerator.askCommand({}, undefined, "")).not.toContain("--resume");
+        expect(ClaudeCLIGenerator.askCommand({}, undefined, "")).not.toContain("--effort");
+        expect(ClaudeCLIGenerator.askCommand({}, undefined, "", "low").slice(-2)).toEqual(["--effort", "low"]);
     });
 
     test("execute allows the editing tools", () => {

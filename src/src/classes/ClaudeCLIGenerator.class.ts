@@ -9,14 +9,19 @@ export class ClaudeCLIGenerator extends SlytherGenerator {
     private static readonly TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
 
     constructor(
-        /** The model to ask, or the CLI's default when empty. */
-        private readonly model = "",
+        /** The model to ask, SLYTHER_MODEL by default, or the CLI's default when empty. */
+        private readonly model = process.env.SLYTHER_MODEL ?? "",
+        /**
+         * How hard the model thinks, SLYTHER_EFFORT by default, else low: writing a script from its rules
+         * needs little, and a high effort keeps the model reasoning for minutes on an ambiguous one.
+         */
+        private readonly effort = process.env.SLYTHER_EFFORT ?? "low",
     ) {
         super();
     }
 
     /** The command line of `ask`: print mode, no tools, JSON output shaped by the schema, resuming the session if any. */
-    static askCommand(schema: object, session: string | undefined, model: string): string[] {
+    static askCommand(schema: object, session: string | undefined, model: string, effort = ""): string[] {
         return [
             ClaudeCLIGenerator.BINARY,
             "-p",
@@ -28,11 +33,12 @@ export class ClaudeCLIGenerator extends SlytherGenerator {
             "",
             ...(session ? ["--resume", session] : []),
             ...(model ? ["--model", model] : []),
+            ...(effort ? ["--effort", effort] : []),
         ];
     }
 
     /** The command line of `execute`: print mode with the editing tools allowed. */
-    static executeCommand(model: string): string[] {
+    static executeCommand(model: string, effort = ""): string[] {
         return [
             ClaudeCLIGenerator.BINARY,
             "-p",
@@ -43,12 +49,13 @@ export class ClaudeCLIGenerator extends SlytherGenerator {
             "--permission-mode",
             "acceptEdits",
             ...(model ? ["--model", model] : []),
+            ...(effort ? ["--effort", effort] : []),
         ];
     }
 
     override async ask<T>(prompt: string, schema: object, session?: string): Promise<{ result: T; session: string }> {
         const reply = await this.call<{ structured_output?: T }>(
-            ClaudeCLIGenerator.askCommand(schema, session, this.model),
+            ClaudeCLIGenerator.askCommand(schema, session, this.model, this.effort),
             prompt,
         );
 
@@ -60,7 +67,7 @@ export class ClaudeCLIGenerator extends SlytherGenerator {
     }
 
     override async execute(prompt: string, cwd: string): Promise<string> {
-        const reply = await this.call(ClaudeCLIGenerator.executeCommand(this.model), prompt, cwd);
+        const reply = await this.call(ClaudeCLIGenerator.executeCommand(this.model, this.effort), prompt, cwd);
 
         return reply.result ?? "";
     }

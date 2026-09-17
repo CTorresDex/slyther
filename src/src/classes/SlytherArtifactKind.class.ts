@@ -195,13 +195,20 @@ export class SlytherArtifactKind {
         }
     }
 
-    /** Adds every built-in operation the kind does not declare, once it is known to have operations. */
+    /**
+     * Adds every built-in operation the kind does not declare, once it is known to have operations. The
+     * ones that serve the artifacts referencing an instance of the kind are only added when there is one.
+     */
     private addBuiltins(parsed: ParsedSlytherScript): void {
         if (this.operations.length === 0) {
             return;
         }
 
-        for (const artifact of SlytherBuiltinOperation.of(this.name)) {
+        const referenced = parsed.artifacts.some((artifact) =>
+            artifact.references.some((reference) => reference.startsWith(`${this.name}:`) && reference !== `${artifact.artifact}:${artifact.name}`),
+        );
+
+        for (const artifact of SlytherBuiltinOperation.of(this.name, referenced)) {
             if (this.operations.some((operation) => operation.artifact.name === artifact.name)) {
                 continue;
             }

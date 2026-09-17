@@ -58,7 +58,9 @@ class SlytherGenerationTask {
 
 class ClaudeCLIGenerator {
     A #{SlytherGenerator} backed by the Claude Code CLI, `claude` unless the SLYTHER_CLAUDE environment
-    variable names another executable. `ask` runs it in print mode with every tool disabled, the prompt
+    variable names another executable, with the model SLYTHER_MODEL names, else the CLI's default, and the
+    effort SLYTHER_EFFORT names, else low, since writing a script from its rules needs little and a high
+    effort keeps the model reasoning for minutes on an ambiguous one. `ask` runs it in print mode with every tool disabled, the prompt
     on stdin, the JSON output format and the schema as its structured output, resuming the session when
     given one, and returns the structured output and the session id of the reply. `execute` runs it in
     print mode in the given directory with the tools to read, search and edit files and to run commands

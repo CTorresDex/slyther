@@ -2,15 +2,21 @@
 import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 
 export class SlytherBuiltinOperation {
-    /** The operations every kind with operations has, in the order they are added. */
-    private static readonly ALL: { name: string; params: { name: string; type: string }[]; content: string }[] = [
+    /**
+     * The operations a kind with operations has without declaring them, in the order they are added. One
+     * marked as referenced is only added when an instance of the kind is referenced by another artifact,
+     * since it only serves to decide whether what references it must be evaluated again.
+     */
+    private static readonly ALL: { name: string; params: { name: string; type: string }[]; content: string; referenced: boolean }[] = [
         {
             name: "list",
+            referenced: false,
             params: [],
             content: "Prints the id of every artifact of the kind that exists, one per line, and exits 0.",
         },
         {
             name: "signature",
+            referenced: true,
             params: [{ name: "id", type: "string" }],
             content: [
                 "Prints the public shape of the artifact, one member per line as `key shape`, where the key is",
@@ -22,6 +28,7 @@ export class SlytherBuiltinOperation {
         },
         {
             name: "uses",
+            referenced: true,
             params: [{ name: "id", type: "string" }],
             content: [
                 "Prints one line per artifact this one depends on, as `kind:id key` for every member of it this",
@@ -37,9 +44,9 @@ export class SlytherBuiltinOperation {
         return SlytherBuiltinOperation.ALL.map((operation) => operation.name);
     }
 
-    /** The built-in operations of the given kind, as artifacts named `Kind::name`. */
-    static of(kind: string): SlytherArtifact[] {
-        return SlytherBuiltinOperation.ALL.map(
+    /** The built-in operations of the given kind, as artifacts named `Kind::name`: all of them when the kind is referenced, else only the ones every kind has. */
+    static of(kind: string, referenced: boolean): SlytherArtifact[] {
+        return SlytherBuiltinOperation.ALL.filter((operation) => referenced || !operation.referenced).map(
             (operation) =>
                 new SlytherArtifact(
                     "operation",

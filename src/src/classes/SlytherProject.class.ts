@@ -35,7 +35,7 @@ export class SlytherProject {
     constructor(
         /** The folder the slyther files live in. */
         readonly root: string,
-        generator: SlytherGenerator = new ClaudeCLIGenerator(process.env.SLYTHER_MODEL ?? ""),
+        generator: SlytherGenerator = new ClaudeCLIGenerator(),
         /** Where the build reports what it does: log prints a finished line, say names what it is waiting on. */
         progress: { log: (line: string) => void; say: (label: string) => void } = { log: () => {}, say: () => {} },
         /** verbose: every prompt sent to the llm and every reply are logged. */

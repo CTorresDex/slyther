@@ -52,7 +52,9 @@ const SPEC = (step = "makes the file") => `@lang "sh"
     operation evaluate (id: string) {
         llm check { checks the file }
     }
-}`;
+}${INSTANCES}`;
+/** Two instances, one referencing the other, so the kind is asked for signature and uses. */
+const INSTANCES = "\nk a { the a }\nk b { uses #{a} }";
 
 let root = "";
 const kindsOf = (spec: string) => SlytherArtifactKind.of(new SlytherParser().parse(new SlytherScript(spec)));
@@ -158,7 +160,7 @@ describe("SlytherArtifactBuilder", () => {
 
         const report = await build(
             new FakeGenerator(SCRIPTS),
-            '@lang "sh"\n@artifact k {\n rules of k\n operation locate (id: string): deterministic { prints src/{id}.txt }\n}',
+            `@lang "sh"\n@artifact k {\n rules of k\n operation locate (id: string): deterministic { prints src/{id}.txt }\n}${INSTANCES}`,
         );
 
         expect(report.filter((entry) => entry.status === "removed").map((entry) => entry.path).sort()).toEqual([
@@ -219,7 +221,7 @@ describe("SlytherArtifactBuilder", () => {
 
 describe("SlytherProject run", () => {
     test("runs a deterministic operation and prints the markdown of one that is not", async () => {
-        await writeFile(join(root, "main.sly"), SPEC());
+        await writeFile(join(root, "main.sly"), SPEC().replace(INSTANCES, ""));
 
         const project = new SlytherProject(root, new FakeGenerator(SCRIPTS));
 

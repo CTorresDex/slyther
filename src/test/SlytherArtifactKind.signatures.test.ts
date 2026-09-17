@@ -93,8 +93,16 @@ describe("SlytherArtifactKind lang", () => {
 });
 
 describe("SlytherArtifactKind built-in operations", () => {
-    test("a kind with operations has list, signature and uses after the ones written", () => {
-        const [kind] = kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n}`);
+    test("a kind with operations has list after the ones written, and signature and uses once an instance of it is referenced", () => {
+        const [alone] = kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n}\nk a { alone }`);
+
+        expect(alone!.operations.map((operation) => operation.artifact.name)).toEqual(["k::locate", "k::list"]);
+
+        const [self] = kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n}\nk a { refers to #{a} }`);
+
+        expect(self!.operations.map((operation) => operation.artifact.name)).toEqual(["k::locate", "k::list"]);
+
+        const [kind] = kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n}\nk a { the a }\nk b { uses #{a} }`);
         const names = kind!.operations.map((operation) => operation.artifact.name);
 
         expect(names).toEqual(["k::locate", "k::list", "k::signature", "k::uses"]);

@@ -27,7 +27,7 @@ export default async function (args: string[], context: { flags: Record<string, 
 
     const project = new SlytherProject(process.cwd())
     const result = await project.run(kind, operation, params, {
-        execute: context.flags.execute === true ? new ClaudeCLIGenerator(process.env.SLYTHER_MODEL ?? '') : undefined,
+        execute: context.flags.execute === true ? new ClaudeCLIGenerator() : undefined,
     })
 
     if (result.output) process.stdout.write(result.output)
