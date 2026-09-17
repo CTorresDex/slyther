@@ -3,7 +3,7 @@ import { SlytherProject } from '../classes/SlytherProject.class.ts'
 
 export const help = {
     short: 'Compile the Slyther project in the current directory',
-    long: `Usage: slyther build [--max <n>]
+    long: `Usage: slyther build [--max <n>] [--verbose]
 
 Compiles the Slyther project in the current directory. Parses ${SlytherProject.MAIN}, resolving its imports
 relative to it, writes the JSON representation of the parsed script to ${SlytherProject.OUTPUT}/${SlytherProject.BUILD}/parser.json,
@@ -19,6 +19,7 @@ errors and evaluated once more. What it finds is recorded in ${SlytherProject.OU
 the next build only works on what changed. Exits 1 when any instance fails or is missing.
 
 Flags:
+  --verbose    print every prompt sent to the LLM and every reply, as they happen
   --max <n>    refuse to create, update or evaluate more than n instances with the LLM in one run`,
 }
 
@@ -28,7 +29,7 @@ export default async function (args: string[], context: { flags: Record<string, 
     if (max !== undefined && !Number.isInteger(max)) throw new Error('--max takes a whole number')
 
     const { files, instances } = await Progress.of('Building').run(async (progress) =>
-        new SlytherProject(process.cwd(), undefined, progress).build({ max }),
+        new SlytherProject(process.cwd(), undefined, progress, { verbose: context.flags.verbose === true }).build({ max }),
     )
     const failed = instances.filter((entry) => entry.status === 'fail' || entry.status === 'missing')
 

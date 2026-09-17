@@ -3,7 +3,7 @@ import { SlytherProject } from '../classes/SlytherProject.class.ts'
 
 export const help = {
     short: 'Check that every declared instance complies with its declaration and the rules of its kind',
-    long: `Usage: slyther check [--max <n>]
+    long: `Usage: slyther check [--max <n>] [--verbose]
 
 Builds the operations of every kind, then checks every instance the scripts declare whose kind has
 operations, without touching the code: locates it in ${SlytherProject.OUTPUT}/${SlytherProject.SOURCE}, and evaluates it
@@ -13,6 +13,7 @@ What it finds is recorded in ${SlytherProject.OUTPUT}/${SlytherProject.INSTANCES
 what changed. Exits 1 when any instance fails or is missing; run build to create and update them.
 
 Flags:
+  --verbose    print every prompt sent to the LLM and every reply, as they happen
   --max <n>    refuse to evaluate more than n instances with the LLM in one run`,
 }
 
@@ -22,7 +23,7 @@ export default async function (args: string[], context: { flags: Record<string, 
     if (max !== undefined && !Number.isInteger(max)) throw new Error('--max takes a whole number')
 
     const report = await Progress.of('Checking').run(async (progress) =>
-        new SlytherProject(process.cwd(), undefined, progress).check({ max }),
+        new SlytherProject(process.cwd(), undefined, progress, { verbose: context.flags.verbose === true }).check({ max }),
     )
     const failed = report.filter((entry) => entry.status === 'fail' || entry.status === 'missing')
 

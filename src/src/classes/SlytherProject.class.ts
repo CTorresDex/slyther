@@ -11,6 +11,7 @@ import { SlytherInstanceChecker } from "./SlytherInstanceChecker.class.ts";
 import { SlytherInstanceManifest } from "./SlytherInstanceManifest.class.ts";
 import { SlytherParser } from "./SlytherParser.class.ts";
 import { SlytherScript } from "./SlytherScript.class.ts";
+import { SlytherTracedGenerator } from "./SlytherTracedGenerator.class.ts";
 
 export class SlytherProject {
     /** The entry point of a project, relative to its root. */
@@ -26,14 +27,20 @@ export class SlytherProject {
     /** Where what the check found about every artifact is recorded, relative to the output folder. */
     static readonly INSTANCES = "instances";
 
+    /** What writes the scripts of the deterministic steps, traced when the project is verbose. */
+    private readonly generator: SlytherGenerator;
+
     constructor(
         /** The folder the slyther files live in. */
         readonly root: string,
-        /** What writes the scripts of the deterministic steps. */
-        private readonly generator: SlytherGenerator = new ClaudeCLIGenerator(process.env.SLYTHER_MODEL ?? ""),
+        generator: SlytherGenerator = new ClaudeCLIGenerator(process.env.SLYTHER_MODEL ?? ""),
         /** Where the build reports what it does: log prints a finished line, say names what it is waiting on. */
         private readonly progress: { log: (line: string) => void; say: (label: string) => void } = { log: () => {}, say: () => {} },
-    ) {}
+        /** verbose: every prompt sent to the llm and every reply are logged. */
+        options: { verbose?: boolean } = {},
+    ) {
+        this.generator = options.verbose ? new SlytherTracedGenerator(generator, progress.log) : generator;
+    }
 
     /** The path of the entry point. */
     get main(): string {

@@ -2,7 +2,9 @@
 @use Project
 
 class SlytherProject {
-    A Slyther project is a folder where the slyther files live, contains the following structure:
+    A Slyther project is a folder where the slyther files live. It is created with the root, a
+    #{Build::SlytherGenerator}, where to report progress and the verbose option, which wraps the generator in
+    a #{Build::SlytherTracedGenerator}. It contains the following structure:
 
     - main.sly: Entry point
     - .slyther: Contains the Slyther output files

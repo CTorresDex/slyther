@@ -38,6 +38,12 @@ class SlytherGenerator {
     adds one that was not asked for.
 }
 
+class SlytherTracedGenerator {
+    A #{SlytherGenerator} that wraps another and hands it every call, printing, through the log it is
+    given, each prompt before it is sent, with the session it resumes if any, and each reply after, with
+    how long it took: the JSON of an `ask`, the text of an `execute`. It is what --verbose turns on.
+}
+
 class SlytherGenerationTask {
     What a #{SlytherGenerator} is asked to write, contains:
 
