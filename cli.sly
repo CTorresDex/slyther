@@ -21,8 +21,8 @@ command build {
     Input: the --max and --verbose flags
 
     Compiles the current #{Project::SlytherProject} using the #{Project::SlytherProject::build} method, prints
-    what it did to every file and what happened to every instance with its errors, and exits 1 when any
-    instance fails or is missing
+    what it did to every file and what happened to every instance with its errors, an emitted instance
+    indented under its parent, and exits 1 when any instance fails or is missing
 }
 
 command run {
@@ -43,6 +43,6 @@ command check {
     Input: the --max and --verbose flags
 
     Checks the current #{Project::SlytherProject} using the #{Project::SlytherProject::check} method, without
-    touching its code, prints what happened to every instance with its errors, and exits 1 when any fails or
-    is missing
+    touching its code, prints what happened to every instance with its errors, an emitted instance indented
+    under its parent, and exits 1 when any fails or is missing
 }

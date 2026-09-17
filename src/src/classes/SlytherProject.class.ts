@@ -119,6 +119,7 @@ export class SlytherProject {
         const report = await new SlytherArtifactBuilder(this.src, this.artifactsDir, this.generator, this.progress).build(
             kinds,
             SlytherRunScript.of(parsed),
+            parsed,
         );
 
         return report.map((entry) => ({ ...entry, path: join(this.src, this.artifactsDir, entry.path) }));
@@ -142,10 +143,7 @@ export class SlytherProject {
      * built, recording what it finds in the instances folder so the next check evaluates only what
      * changed. With compile, it also creates what is missing and updates what is outdated or fails.
      */
-    async checkInstances(
-        parsed: ParsedSlytherScript,
-        options: { compile?: boolean; max?: number } = {},
-    ): Promise<{ key: string; status: "created" | "updated" | "fixed" | "pass" | "fail" | "missing" | "kept"; reason?: string; errors: string[] }[]> {
+    async checkInstances(parsed: ParsedSlytherScript, options: { compile?: boolean; max?: number } = {}): Promise<SlytherInstanceChecker["entry"][]> {
         const built = await SlytherArtifactManifest.load(join(this.src, this.artifactsDir, SlytherArtifactManifest.FILE));
         await mkdir(this.src, { recursive: true });
 

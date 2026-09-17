@@ -1,17 +1,20 @@
 // Imports
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { ProcessUtils } from "./ProcessUtils.class.ts";
 import type { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import type { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
-import type { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
+import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
+import { SlytherExpansion } from "./SlytherExpansion.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import { SlytherInstanceManifest } from "./SlytherInstanceManifest.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
 import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 
 export class SlytherInstanceChecker {
+    /** The folder, next to the manifest, where what every instance of a composite kind emitted is written. */
+    static readonly EXPANDED = "expanded";
     /** What an llm step of evaluate must reply. */
     private static readonly VERDICT = {
         type: "object",
@@ -26,10 +29,10 @@ export class SlytherInstanceChecker {
     private static readonly SPEC = "its spec changed";
 
     private manifest!: SlytherInstanceManifest;
-    /** Every artifact of the script being checked, keyed by `kind:name`. */
+    /** Every artifact of the script being checked, expanded, keyed by `kind:name`. */
     private declared = new Map<string, SlytherArtifact>();
-    /** What every instance looks like now, keyed by `kind:name`. */
-    private states = new Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>();
+    /** What every instance with code looks like now, keyed by `kind:name`. */
+    private states = new Map<string, SlytherInstanceChecker["state"]>();
 
     constructor(
         /** The folder the code of the project lives in, where every script runs. */
@@ -55,60 +58,79 @@ export class SlytherInstanceChecker {
      * evaluation, or failed last time, is updated with the errors and evaluated once more. Without it,
      * nothing touches the code. Returns what happened to every instance.
      */
-    async check(
-        parsed: ParsedSlytherScript,
-        kinds: SlytherArtifactKind[],
-    ): Promise<{ key: string; status: "created" | "updated" | "fixed" | "pass" | "fail" | "missing" | "kept"; reason?: string; errors: string[] }[]> {
+    async check(parsed: ParsedSlytherScript, kinds: SlytherArtifactKind[]): Promise<SlytherInstanceChecker["entry"][]> {
         this.manifest = await SlytherInstanceManifest.load(this.path);
-        this.declared = new Map(parsed.artifacts.map((artifact) => [`${artifact.artifact}:${artifact.name}`, artifact]));
 
-        const instances = this.instancesOf(parsed, kinds);
-        const report: Awaited<ReturnType<SlytherInstanceChecker["check"]>> = [];
+        const { parsed: expanded, expansions } = await this.expand(parsed, kinds);
+
+        this.declared = new Map(expanded.artifacts.map((artifact) => [`${artifact.artifact}:${artifact.name}`, artifact]));
+
+        const instances = this.instancesOf(expanded, kinds, expansions);
+        const report: SlytherInstanceChecker["entry"][] = [];
 
         for (const key of Object.keys(this.manifest.instances)) {
             if (!instances.has(key)) {
-                delete this.manifest.instances[key];
+                report.push(...(await this.forget(key)));
             }
         }
 
-        const states = new Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>();
+        for (const [key, expansion] of expansions) {
+            const instance = instances.get(key)!;
+
+            this.manifest.instances[key] = {
+                ...SlytherInstanceChecker.emptyRecord(),
+                specHash: this.specHashOf(instance),
+                evaluatedWith: this.evaluatedWithOf(instance.kind),
+                result: expansion.error ? "fail" : "pass",
+                errors: expansion.error ? [expansion.error] : [],
+            };
+            report.push(
+                expansion.error
+                    ? { key, status: "fail", reason: "what it emitted is not valid", errors: [expansion.error] }
+                    : { key, status: "expanded", reason: `emitted ${expansion.emitted.length} instance${expansion.emitted.length === 1 ? "" : "s"}`, errors: [] },
+            );
+        }
+
+        const coded = new Map([...instances].filter(([, instance]) => !instance.composite));
+        const states = new Map<string, SlytherInstanceChecker["state"]>();
 
         this.states = states;
 
-        for (const [key, instance] of instances) {
+        for (const [key, instance] of coded) {
             this.options.say?.(`${key}: locating`);
             states.set(key, await this.stateOf(key, instance));
         }
 
         await this.warnUndeclared(kinds, instances);
 
-        const order = SlytherInstanceChecker.orderOf(instances, states);
-        const pending = order.filter((key) => this.workOf(key, instances.get(key)!, states) !== null);
-        const llm = pending.filter((key) => this.needsLlm(instances.get(key)!.kind, this.workOf(key, instances.get(key)!, states)!)).length;
+        const order = SlytherInstanceChecker.orderOf(coded);
+        const pending = order.filter((key) => this.workOf(key, coded.get(key)!, states) !== null);
+        const llm = pending.filter((key) => this.needsLlm(coded.get(key)!.kind, this.workOf(key, coded.get(key)!, states)!)).length;
 
         if (this.options.max !== undefined && llm > this.options.max) {
             throw new Error(`${llm} instances need the llm, more than the ${this.options.max} allowed: raise --max or narrow the change.`);
         }
 
         if (pending.length > 0) {
-            this.options.log?.(`${pending.length} of ${instances.size} instances need work, ${llm} with the llm`);
+            this.options.log?.(`${pending.length} of ${coded.size} instances need work, ${llm} with the llm`);
         }
 
         for (const key of order) {
-            const instance = instances.get(key)!;
+            const instance = coded.get(key)!;
             let state = states.get(key)!;
             const work = this.workOf(key, instance, states);
+            const parent = instance.parent ? { parent: instance.parent } : {};
 
             if (work === null) {
                 const record = this.manifest.instances[key];
 
                 if (state.segments === undefined) {
-                    this.manifest.instances[key] = { ...SlytherInstanceChecker.emptyRecord(), specHash: this.specHashOf(instance) };
-                    report.push({ key, status: "missing", errors: [] });
+                    this.manifest.instances[key] = { ...SlytherInstanceChecker.emptyRecord(), specHash: this.specHashOf(instance), ...parent };
+                    report.push({ key, status: "missing", errors: [], ...parent });
                 } else if (record?.result === "fail") {
-                    report.push({ key, status: "fail", reason: "unchanged since it failed", errors: record.errors });
+                    report.push({ key, status: "fail", reason: "unchanged since it failed", errors: record.errors, ...parent });
                 } else {
-                    report.push({ key, status: "kept", errors: [] });
+                    report.push({ key, status: "kept", errors: [], ...parent });
                 }
 
                 continue;
@@ -117,7 +139,7 @@ export class SlytherInstanceChecker {
             const started = Date.now();
 
             let verdict: { pass: boolean; errors: string[] };
-            let status: Awaited<ReturnType<SlytherInstanceChecker["check"]>>[number]["status"];
+            let status: SlytherInstanceChecker["entry"]["status"];
 
             if (work.operation) {
                 await this.perform(work.operation, instance, key, []);
@@ -143,6 +165,7 @@ export class SlytherInstanceChecker {
             // Without compile, a spec that changed is not recorded as seen, so a later build still updates it.
             this.manifest.instances[key] = {
                 specHash: this.options.compile || !this.manifest.instances[key] ? this.specHashOf(instance) : this.manifest.instances[key].specHash,
+                ...parent,
                 contentHash: state.contentHash ?? "",
                 ...(state.signature ? { signature: state.signature } : {}),
                 dependencies: Object.fromEntries(
@@ -158,12 +181,185 @@ export class SlytherInstanceChecker {
             };
             await this.manifest.save();
             this.options.log?.(`${status} ${key}: ${work.reason} (${StringUtils.duration(Date.now() - started)})`);
-            report.push({ key, status, reason: work.reason, errors: verdict.errors });
+            report.push({ key, status, reason: work.reason, errors: verdict.errors, ...parent });
         }
 
         await this.manifest.save();
 
-        return report;
+        return SlytherInstanceChecker.grouped(report);
+    }
+
+    /**
+     * Runs the expand of every instance of a composite kind, in the order declared, and reads what it
+     * prints into the script, so the instances it emits are checked as any other. What it prints is
+     * written next to the manifest, one file per instance, and what is not valid fails the instance
+     * and emits nothing. Returns the script expanded and, per instance, what it emitted or why it failed.
+     */
+    private async expand(
+        parsed: ParsedSlytherScript,
+        kinds: SlytherArtifactKind[],
+    ): Promise<{ parsed: ParsedSlytherScript; expansions: Map<string, { emitted: string[]; error?: string }> }> {
+        const composite = new Set(kinds.filter((kind) => kind.composite).map((kind) => kind.name));
+        const expansions = new Map<string, { emitted: string[]; error?: string }>();
+        const written = new Set<string>();
+        let expanded = parsed;
+
+        for (const artifact of parsed.artifacts) {
+            if (!composite.has(artifact.artifact)) {
+                continue;
+            }
+
+            const key = `${artifact.artifact}:${artifact.name}`;
+
+            try {
+                const printed = await this.runExpand(key, { kind: artifact.artifact, name: artifact.name, artifact });
+                const result = SlytherExpansion.of(printed, artifact, kinds, expanded);
+                const path = this.expandedPathOf(artifact.artifact, artifact.name);
+
+                expanded = result.parsed;
+                await mkdir(dirname(path), { recursive: true });
+                await writeFile(path, `${printed.trim()}\n`);
+                written.add(path);
+                expansions.set(key, { emitted: result.emitted });
+            } catch (error) {
+                expansions.set(key, { emitted: [], error: error instanceof Error ? error.message : String(error) });
+            }
+        }
+
+        await this.pruneExpanded(written);
+
+        return { parsed: expanded, expansions };
+    }
+
+    /** What the expand of the instance prints, with its params filled as create fills them. Throws when it is not built or fails. */
+    private async runExpand(key: string, instance: { kind: string; name: string; artifact: SlytherArtifact }): Promise<string> {
+        const operation = this.built.operations[`${instance.kind}::${SlytherArtifactKind.EXPAND}`];
+
+        if (!operation?.deterministic) {
+            throw new Error(`the expand of ${instance.kind} is not built: run build first.`);
+        }
+
+        const args = SlytherInstanceChecker.argsOf(operation, instance, key, []);
+        let printed = "";
+
+        for (const step of operation.steps) {
+            this.options.say?.(`${key}: expanding with ${step.run!.join(" ")}`);
+
+            const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd });
+
+            if (result.code !== 0) {
+                throw new Error(`expanding ${key} failed:\n${result.stderr || result.stdout}`);
+            }
+
+            printed = result.stdout;
+        }
+
+        return printed;
+    }
+
+    /** Where what an instance of a composite kind emitted is written. */
+    private expandedPathOf(kind: string, name: string): string {
+        return join(dirname(this.path), SlytherInstanceChecker.EXPANDED, kind, `${name}.sly`);
+    }
+
+    /** Removes what was written for instances that are gone, and the folders left empty. */
+    private async pruneExpanded(written: Set<string>): Promise<void> {
+        const folder = join(dirname(this.path), SlytherInstanceChecker.EXPANDED);
+        const kinds = await readdir(folder, { withFileTypes: true }).catch(() => []);
+
+        for (const kind of kinds) {
+            if (!kind.isDirectory()) {
+                continue;
+            }
+
+            for (const file of await readdir(join(folder, kind.name))) {
+                if (!written.has(join(folder, kind.name, file))) {
+                    await rm(join(folder, kind.name, file), { force: true });
+                }
+            }
+
+            if ((await readdir(join(folder, kind.name))).length === 0) {
+                await rmdir(join(folder, kind.name));
+            }
+        }
+    }
+
+    /**
+     * Drops the record of an instance that is no longer declared, unless a parent emitted it and its
+     * code is still there: then it is an orphan, reported and kept out of the graph until its code is gone.
+     */
+    private async forget(key: string): Promise<SlytherInstanceChecker["entry"][]> {
+        const record = this.manifest.instances[key]!;
+        const boundary = key.indexOf(":");
+        const located = record.parent ? await this.runOperation(key.slice(0, boundary), "locate", [key.slice(boundary + 1)]) : undefined;
+
+        if (located?.code !== 0) {
+            delete this.manifest.instances[key];
+
+            return [];
+        }
+
+        record.result = "orphan";
+        record.errors = [];
+
+        return [{ key, status: "orphan", reason: `no longer emitted by ${record.parent}`, errors: [], parent: record.parent }];
+    }
+
+    /** The report with every emitted instance right after its parent, its orphans after them, and the orphans of a parent that is gone last. */
+    private static grouped(report: SlytherInstanceChecker["entry"][]): SlytherInstanceChecker["entry"][] {
+        const parents = report.filter((entry) => !entry.parent);
+        const childrenOf = (parent: string) => report.filter((entry) => entry.parent === parent);
+        const grouped = parents.flatMap((parent) => [
+            parent,
+            ...childrenOf(parent.key).filter((entry) => entry.status !== "orphan"),
+            ...childrenOf(parent.key).filter((entry) => entry.status === "orphan"),
+        ]);
+
+        return [...grouped, ...report.filter((entry) => entry.parent && !parents.some((parent) => parent.key === entry.parent))];
+    }
+
+    /**
+     * The hash of the declaration of the instance and of everything it leans on: what it references
+     * that has no code of its own, so a change to the rules of a kind or the prose of a plain artifact
+     * or of a parent counts as a change of its spec. Just its own hash when it leans on nothing.
+     */
+    private specHashOf(instance: { artifact: SlytherArtifact; leans: string[] }): string {
+        return instance.leans.length === 0
+            ? instance.artifact.hash
+            : SlytherInstanceChecker.hash(instance.artifact.hash, ...instance.leans.map((reference) => `${reference}@${this.declared.get(reference)?.hash ?? ""}`));
+    }
+
+    /**
+     * What the instance references, for the generator to read, one level deep: the rules of a kind, the
+     * prose of a plain artifact, and the args, the prose and the signature of an instance.
+     */
+    private contextOf(instance: { kind: string; name: string; artifact: SlytherArtifact }, heading: string): string[] {
+        const sections: string[] = [];
+
+        for (const reference of instance.artifact.references) {
+            const artifact = this.declared.get(reference);
+
+            if (!artifact || reference === `${instance.kind}:${instance.name}`) {
+                continue;
+            }
+
+            if (artifact.artifact === "artifact") {
+                sections.push(`${heading} The rules of every ${artifact.name}`, "", artifact.content || "(no rules)", "");
+                continue;
+            }
+
+            const signature = this.states.get(reference)?.signature;
+
+            sections.push(
+                `${heading} ${artifact.artifact} ${artifact.name}`,
+                "",
+                SlytherInstanceChecker.specOf(artifact),
+                ...(signature ? ["", "Signature:", "", ...signature.map((line) => `- ${line}`)] : []),
+                "",
+            );
+        }
+
+        return sections;
     }
 
     /**
@@ -174,7 +370,7 @@ export class SlytherInstanceChecker {
     private workOf(
         key: string,
         instance: { kind: string; artifact: SlytherArtifact; leans: string[] },
-        states: Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>,
+        states: Map<string, SlytherInstanceChecker["state"]>,
     ): { reason: string; operation?: "create" | "update"; done: "created" | "updated" | "pass"; broken: boolean } | null {
         const state = states.get(key)!;
 
@@ -207,27 +403,47 @@ export class SlytherInstanceChecker {
     }
 
     /**
-     * The instances: every artifact whose kind has operations, with the instances it references, which
-     * are its dependencies, and what else it references, which it leans on.
+     * The instances: every artifact whose kind has operations, with the instances with code it
+     * references, which are its dependencies, what else it references, which it leans on, and the
+     * instance that emitted it, if any.
      */
     private instancesOf(
         parsed: ParsedSlytherScript,
         kinds: SlytherArtifactKind[],
-    ): Map<string, { kind: string; name: string; artifact: SlytherArtifact; references: string[]; leans: string[] }> {
+        expansions: Map<string, { emitted: string[] }>,
+    ): Map<string, SlytherInstanceChecker["instance"]> {
         const checkable = new Set(kinds.filter((kind) => kind.operations.length > 0).map((kind) => kind.name));
-        const instances = new Map<string, { kind: string; name: string; artifact: SlytherArtifact; references: string[]; leans: string[] }>();
+        const composite = new Set(kinds.filter((kind) => kind.composite).map((kind) => kind.name));
+        const parents = new Map([...expansions].flatMap(([parent, expansion]) => expansion.emitted.map((key) => [key, parent] as const)));
+        const instances = new Map<string, SlytherInstanceChecker["instance"]>();
 
         for (const artifact of parsed.artifacts) {
+            const key = `${artifact.artifact}:${artifact.name}`;
+
             if (checkable.has(artifact.artifact)) {
-                instances.set(`${artifact.artifact}:${artifact.name}`, { kind: artifact.artifact, name: artifact.name, artifact, references: [], leans: [] });
+                const parent = parents.get(key);
+
+                instances.set(key, {
+                    kind: artifact.artifact,
+                    name: artifact.name,
+                    artifact,
+                    references: [],
+                    leans: [],
+                    composite: composite.has(artifact.artifact),
+                    ...(parent ? { parent } : {}),
+                });
             }
         }
 
         for (const instance of instances.values()) {
             for (const reference of instance.artifact.references) {
-                if (reference !== `${instance.kind}:${instance.name}`) {
-                    (instances.has(reference) ? instance.references : instance.leans).push(reference);
+                if (reference === `${instance.kind}:${instance.name}`) {
+                    continue;
                 }
+
+                const target = instances.get(reference);
+
+                (target && !target.composite ? instance.references : instance.leans).push(reference);
             }
         }
 
@@ -318,8 +534,8 @@ export class SlytherInstanceChecker {
     private changeOf(
         key: string,
         instance: { kind: string; artifact: SlytherArtifact; leans: string[] },
-        state: Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>,
-        states: Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>,
+        state: SlytherInstanceChecker["state"],
+        states: Map<string, SlytherInstanceChecker["state"]>,
     ): string | null {
         const record = this.manifest.instances[key];
         const { kind } = instance;
@@ -389,7 +605,7 @@ export class SlytherInstanceChecker {
     private async evaluate(
         instance: { kind: string; name: string; artifact: SlytherArtifact },
         key: string,
-        state: Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>,
+        state: SlytherInstanceChecker["state"],
     ): Promise<{ pass: boolean; errors: string[] }> {
         const operation = this.built.operations[`${instance.kind}::evaluate`];
 
@@ -514,58 +730,14 @@ export class SlytherInstanceChecker {
         return [...args, ...(args.length > 0 && artifact.content ? [""] : []), artifact.content || "(no further description)"].join("\n");
     }
 
-    /**
-     * The hash of the declaration of the instance and of everything it leans on: what it references
-     * that is not an instance, so a change to the rules of a kind or the prose of a plain artifact
-     * counts as a change of its spec. Just its own hash when it leans on nothing.
-     */
-    private specHashOf(instance: { artifact: SlytherArtifact; leans: string[] }): string {
-        return instance.leans.length === 0
-            ? instance.artifact.hash
-            : SlytherInstanceChecker.hash(instance.artifact.hash, ...instance.leans.map((reference) => `${reference}@${this.declared.get(reference)?.hash ?? ""}`));
-    }
-
-    /**
-     * What the instance references, for the generator to read, one level deep: the rules of a kind, the
-     * prose of a plain artifact, and the args, the prose and the signature of an instance.
-     */
-    private contextOf(instance: { kind: string; name: string; artifact: SlytherArtifact }, heading: string): string[] {
-        const sections: string[] = [];
-
-        for (const reference of instance.artifact.references) {
-            const artifact = this.declared.get(reference);
-
-            if (!artifact || reference === `${instance.kind}:${instance.name}`) {
-                continue;
-            }
-
-            if (artifact.artifact === "artifact") {
-                sections.push(`${heading} The rules of every ${artifact.name}`, "", artifact.content || "(no rules)", "");
-                continue;
-            }
-
-            const signature = this.states.get(reference)?.signature;
-
-            sections.push(
-                `${heading} ${artifact.artifact} ${artifact.name}`,
-                "",
-                SlytherInstanceChecker.specOf(artifact),
-                ...(signature ? ["", "Signature:", "", ...signature.map((line) => `- ${line}`)] : []),
-                "",
-            );
-        }
-
-        return sections;
-    }
-
     /** The heading and the sections under it, or nothing when there are no sections. */
     private static section(heading: string, sections: string[]): string[] {
         return sections.length === 0 ? [] : [heading, "", ...sections];
     }
 
-    /** The hash of every script and prompt that takes part in evaluating an instance of the kind. */
+    /** The hash of every script and prompt that takes part in evaluating an instance of the kind, or in expanding it. */
     private evaluatedWithOf(kind: string): string {
-        const paths = ["locate", "signature", "uses", "evaluate"].flatMap(
+        const paths = ["locate", "signature", "uses", "evaluate", SlytherArtifactKind.EXPAND].flatMap(
             (operation) => this.built.operations[`${kind}::${operation}`]?.steps.map((step) => step.path) ?? [],
         );
 
@@ -616,10 +788,7 @@ export class SlytherInstanceChecker {
      * The instances in an order where every one comes after the ones it references, so a dependency is
      * evaluated, and fixed, before what depends on it. A cycle is ordered as written.
      */
-    private static orderOf(
-        instances: Map<string, { references: string[] }>,
-        states: Map<string, unknown>,
-    ): string[] {
+    private static orderOf(instances: Map<string, { references: string[] }>): string[] {
         const order: string[] = [];
         const visited = new Set<string>();
         const visit = (key: string): void => {
@@ -683,4 +852,27 @@ export class SlytherInstanceChecker {
     private static emptyRecord(): SlytherInstanceManifest["instances"][string] {
         return { specHash: "", contentHash: "", dependencies: {}, evaluatedWith: "", result: "missing", errors: [] };
     }
+
+    /** What happened to an instance: its status, why, its errors, and the instance that emitted it, if any. */
+    declare readonly entry: {
+        key: string;
+        status: "created" | "updated" | "fixed" | "pass" | "fail" | "missing" | "kept" | "expanded" | "orphan";
+        reason?: string;
+        errors: string[];
+        parent?: string;
+    };
+
+    /** An instance as declared: the instances with code it references, what else it leans on, and who emitted it. */
+    private declare readonly instance: {
+        kind: string;
+        name: string;
+        artifact: SlytherArtifact;
+        references: string[];
+        leans: string[];
+        composite: boolean;
+        parent?: string;
+    };
+
+    /** Where an instance is and what it looks like now. */
+    private declare readonly state: Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>;
 }

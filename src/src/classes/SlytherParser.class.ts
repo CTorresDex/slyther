@@ -36,7 +36,7 @@ export class SlytherParser {
     private static readonly SYMBOL = /^[A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*$/;
     private static readonly NUMBER = /^-?\d+(?:\.\d+)?$/;
     /** The kinds every script starts with. A kind itself is only declared through `@artifact`. */
-    private static readonly BUILTIN = ["namespace", "operation", "llm", "deterministic"];
+    static readonly BUILTIN = ["namespace", "operation", "llm", "deterministic"];
     /** The types an arg may have without declaring anything. */
     static readonly TYPES = ["string", "number", "boolean"];
     /** Which kinds may open a block inside the body of which kind. A kind absent here nests nothing. */
@@ -79,9 +79,82 @@ export class SlytherParser {
             );
         });
 
+        return SlytherParser.hashed(artifacts, this.lang);
+    }
+
+    /**
+     * Reads declarations into a script already parsed, as if they were written inside the given
+     * artifact: each is named `Parent::name`, its scope is the parent, and it references the parent
+     * whether or not its prose writes it. The source may hold nothing but declarations: a directive,
+     * prose outside a block or a kind the parent may not contain throws. Returns the script with the
+     * added artifacts and its hashes computed again, and the artifacts added.
+     */
+    extend(parsed: ParsedSlytherScript, parent: SlytherArtifact, source: string): { parsed: ParsedSlytherScript; added: SlytherArtifact[] } {
+        this.declarations = new Map(
+            parsed.artifacts.map((artifact) => [
+                artifact.name,
+                { artifact: artifact.artifact, args: "", qualifiers: "", content: "", scope: SlytherParser.scopeOf(artifact.name) },
+            ]),
+        );
+        this.kinds = new Set([...SlytherParser.BUILTIN, ...parsed.artifacts.filter((artifact) => artifact.artifact === "artifact").map((artifact) => artifact.name)]);
+        this.implicit = new Set();
+        this.imported = new Set();
+        this.lang = parsed.lang;
+
+        const known = new Set(this.declarations.keys());
+        const lines = source.split("\n");
+
+        for (let index = 0; index < lines.length; index++) {
+            const line = lines[index]!;
+
+            if (!line.trim()) {
+                continue;
+            }
+
+            const declaration = SlytherParser.DECLARATION.exec(line);
+
+            if (!declaration || line.trimStart().startsWith("@")) {
+                throw new Error(`"${line.trim()}" is not a declaration.`);
+            }
+
+            const [, artifact, name, args, qualifiers, open, tail] = declaration;
+
+            if (artifact === "artifact") {
+                throw new Error(`A kind is declared as "@artifact ${name}", not "artifact ${name}".`);
+            }
+
+            if (!this.kinds.has(artifact!)) {
+                throw new Error(`Unknown artifact "${artifact}" of "${parent.name}::${name}".`);
+            }
+
+            index = this.declareAt(lines, index, artifact!, name!, `${parent.name}::${name}`, parent.name, args ?? "", qualifiers ?? "", open ? tail! : undefined);
+        }
+
+        this.checkParents();
+
+        const added = [...this.declarations]
+            .filter(([name]) => !known.has(name))
+            .map(([name, declaration]) => {
+                const args = this.argumentsOf(declaration, name);
+                const references = new Set([...this.referencesOf(declaration, args), `${parent.artifact}:${parent.name}`]);
+
+                return new SlytherArtifact(declaration.artifact, name, args, this.qualifiersOf(declaration, name), declaration.content, [...references].sort());
+            });
+
+        return { parsed: SlytherParser.hashed([...parsed.artifacts, ...added], parsed.lang), added };
+    }
+
+    private static hashed(artifacts: SlytherArtifact[], lang: string | undefined): ParsedSlytherScript {
         const hasher = new SlytherClosureHasher();
 
-        return new ParsedSlytherScript(artifacts, hasher.hash(artifacts), hasher.scope(artifacts), this.lang);
+        return new ParsedSlytherScript(artifacts, hasher.hash(artifacts), hasher.scope(artifacts), lang);
+    }
+
+    /** The scope a qualified name was declared in: what comes before its last `::`. */
+    private static scopeOf(name: string): string {
+        const boundary = name.lastIndexOf("::");
+
+        return boundary < 0 ? "" : name.slice(0, boundary);
     }
 
     private scan(source: string, path: string): void {

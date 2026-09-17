@@ -71,9 +71,17 @@ class SlytherArtifactKind {
     Its static `of` groups the artifacts of a #{ParsedSlytherScript} into kinds and must throw an
     error when an operation is not declared inside a kind, when a step is not declared inside an
     operation, when an operation that is not deterministic has neither steps nor content, or when a kind has a create
-    or update operation but no evaluate operation to verify them with, or when a kind has operations
-    but no locate operation, or its locate operation is not deterministic, or its params are not exactly
-    `(id: string)`. A kind with no operations is allowed: it is declared but not yet defined.
+    or update operation but no evaluate operation to verify them with, or when a kind that is not
+    composite has operations but no locate operation, or its locate operation is not deterministic, or
+    its params are not exactly `(id: string)`. A kind with no operations is allowed: it is declared but
+    not yet defined.
+
+    A kind with an expand operation is composite: an instance of it has no code of its own, only the
+    instances its expand emits, as declarations it prints, see #{SlytherExpansion}. So expand must be
+    deterministic, the kind must not declare locate, create, update or evaluate, and any other
+    operation of it must throw an error. The kinds expand may emit are the ones its prose references,
+    and a kind it does not reference is not emitted. A composite kind is not asked for any
+    #{SlytherBuiltinOperation}, since there is nothing to list or locate.
 
     The locate operation is how every other operation finds an artifact of the kind: given its id, it
     prints where the artifact is and exits 0, or prints nothing and exits 1 when it does not exist. An
@@ -82,8 +90,8 @@ class SlytherArtifactKind {
     and starting at 1. A folder stands for its structure, what it holds directly, and not for the content
     of its files: a kind that cares about some of them prints them as segments of their own.
 
-    A kind with operations also has the #{SlytherBuiltinOperation} it is due, added after the ones written,
-    unless it declares an operation of the same name, which replaces the built-in one.
+    A kind with operations that is not composite also has the #{SlytherBuiltinOperation} it is due, added
+    after the ones written, unless it declares an operation of the same name, which replaces the built-in one.
 }
 
 class SlytherBuiltinOperation {
@@ -138,6 +146,28 @@ class SlytherRunScript {
     Its static `of` groups the artifacts of a #{ParsedSlytherScript} into scripts, in the order written.
 }
 
+class SlytherExpansion {
+    What the expand operation of a composite #{SlytherArtifactKind} printed for an instance of it, read
+    into the #{ParsedSlytherScript} that declares the instance. Its static `of` takes the text, the
+    instance, the kinds and the parsed script, and returns the script with the emitted artifacts added,
+    with their hashes computed as any other, along with the `kind:name` of every one emitted.
+
+    The text is declarations as they are written in a script, each named relative to the instance: an
+    `endpoint create` emitted for `crud Users` declares `endpoint:Users::create`, whose scope is the
+    instance, so a reference inside it resolves in the instance first, then globally. Every emitted
+    artifact references its parent, whether or not its prose writes it, so it receives the prose of the
+    parent and is updated when that prose changes.
+
+    It must throw an error, naming the instance and the reason, when the text does not parse with
+    #{SlytherParser}, when it holds anything but a declaration of an artifact: a directive, a kind, an
+    operation or a step; when the kind of a declaration is not one the expand of the parent references,
+    or is composite, or has no create operation, since what it emits could never be made; when a
+    declaration gives nothing for a param of the create of its kind that is not optional, where id is
+    its name, a param named as one of its args is that arg, and any other is its prose; when a reference
+    does not resolve; or when a name is already declared, since what a parent emits is never overridden
+    by hand.
+}
+
 class SlytherParser {
     Reads a #{SlytherScript} and returns a #{ParsedSlytherScript}
 
@@ -185,4 +215,8 @@ class SlytherParser {
     must throw an error.
 
     Declaring the same name twice in the same scope must throw an error.
+
+    It can also read declarations into a script already parsed, under a given artifact, which is what
+    #{SlytherExpansion} does with what an expand prints: the declarations are parsed as if written inside
+    that artifact, and the hashes of the script are computed again with them.
 }

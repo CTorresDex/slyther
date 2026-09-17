@@ -7,8 +7,10 @@ class SlytherInstanceManifest {
     by `kind:name`, contains for each one:
 
     - specHash: The hash of the #{Compiler::SlytherArtifact} that declares the instance and of every
-      artifact it references that is not an instance: a kind, whose hash is its rules, or a plain
-      artifact. So a change to its prose or its args is noticed, and so is a change to what it leans on
+      artifact it references that has no code of its own: a kind, whose hash is its rules, a plain
+      artifact, or an instance of a composite kind. So a change to its prose or its args is noticed, and
+      so is a change to what it leans on
+    - parent: The instance whose expand emitted it, when it was not declared by hand
     - contentHash: The hash of the segments locate prints, each as its path and its content, sorted, so
       where a segment is never matters, only what it holds. The content of a folder is its listing, one
       entry per line with a slash after the folders, so it changes with its structure and not with its files
@@ -17,7 +19,7 @@ class SlytherInstanceManifest {
       this one was evaluated
     - evaluatedWith: The hash of every script and prompt that takes part in evaluating an instance of the
       kind, as built: locate, signature, uses and evaluate
-    - result: pass, fail or missing, and errors: what evaluate reported
+    - result: pass, fail, missing or orphan, and errors: what evaluate reported
 
     Loading a manifest that does not exist gives an empty one, and it is saved with its instances sorted.
 }
@@ -30,6 +32,20 @@ class SlytherInstanceChecker {
     An instance is every artifact whose kind has operations, identified by its name, and the instances it
     references with \#{} are its dependencies. Instances are checked in an order where every one comes
     after its dependencies, so a dependency is evaluated, and fixed, before what depends on it.
+
+    An instance of a composite kind is expanded before any instance is ordered: its expand operation runs
+    with its params filled as create fills them, what it prints is read with #{Compiler::SlytherExpansion}
+    and written as `expanded/kind/name.sly` next to the manifest, so what it emits is committed and
+    reviewed, and the emitted instances are checked as any other, in the order their references give.
+    When what it prints is not valid, the instance fails with the reason and emits nothing. Since it has
+    no code to evaluate, it is reported as expanded, with how many instances it emitted, and every
+    emitted instance is recorded with it as its parent and reported under it.
+
+    An instance the manifest knows by a parent that no longer emits it, or whose parent is gone, is an
+    orphan: it leaves the graph, so it is neither created, updated nor evaluated, its code is not
+    touched, an instance that references it fails as it does when a reference is missing, and it is
+    reported as orphan on every check until its code is gone, when it is forgotten. Nothing removes an
+    orphan yet.
 
     Whatever the generator is asked about an instance, to create, update or evaluate it, is followed by
     what the instance references, one level deep, so its prose may lean on it: the rules of a kind, the

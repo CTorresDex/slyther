@@ -105,3 +105,20 @@ describe("SlytherVerifier", () => {
         );
     });
 });
+
+describe("SlytherVerifier expand", () => {
+    test("expand runs with the sample args, must exit 0, and what it prints must be accepted", async () => {
+        const ok = await write("expand.sh", 'echo "k one { of $1 and $2 }"\n');
+        const failing = await write("expand-fail.sh", "echo nope >&2; exit 2\n");
+        const verifier = new SlytherVerifier(root);
+        const validate = (output: string) => (output.includes("of sample and sample") ? null : `unexpected: ${output.trim()}`);
+
+        expect(await verifier.verify({ operation: "expand", script: ok, runtime, expand: { args: ["sample", "sample"], validate } })).toBeNull();
+        expect(await verifier.verify({ operation: "expand", script: ok, runtime, expand: { args: ["other", "other"], validate } })).toBe(
+            "expand.sh printed declarations that are not accepted:\nunexpected: k one { of other and other }",
+        );
+        expect(await verifier.verify({ operation: "expand", script: failing, runtime, expand: { args: ["sample"], validate } })).toBe(
+            'expand-fail.sh must exit 0 given "sample" but exited 2:\nnope\n',
+        );
+    });
+});

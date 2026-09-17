@@ -5,8 +5,8 @@ import type { SlytherRuntime } from "./SlytherRuntime.class.ts";
 export class SlytherVerifier {
     /** The operations that change nothing when run, so their scripts can be run to check them. */
     private static readonly READ_ONLY = ["locate", "list", "signature", "uses"];
-    /** The id an operation is run with when list prints none. */
-    private static readonly SAMPLE = "sample";
+    /** The id an operation is run with when list prints none, and the value every param of an expand is run with. */
+    static readonly SAMPLE = "sample";
     /** `key shape`: a member of a signature. */
     private static readonly SIGNATURE = /^\S+\s+\S.*$/;
     /** `kind:id key`, `kind:id *` or `kind:id **`: a dependency of an artifact. */
@@ -21,7 +21,8 @@ export class SlytherVerifier {
      * Checks the script of a deterministic step and returns why it fails, or null when it passes. The
      * script is checked for syntax, and the scripts of the read-only operations are also run, with the
      * script of list when the step is not list itself, to get a real id to run them with, and with the
-     * script of locate when the step is list, since locate must find every id list prints.
+     * script of locate when the step is list, since locate must find every id list prints. The script
+     * of an expand is run with the sample args given: it must exit 0 and print what validate accepts.
      */
     async verify(step: {
         operation: string;
@@ -29,11 +30,24 @@ export class SlytherVerifier {
         runtime: SlytherRuntime;
         list?: { script: string; runtime: SlytherRuntime };
         locate?: { script: string; runtime: SlytherRuntime };
+        expand?: { args: string[]; validate: (output: string) => string | null };
     }): Promise<string | null> {
         const check = await ProcessUtils.run(step.runtime.check(step.script), { cwd: this.cwd });
 
         if (check.code !== 0) {
             return `${step.script} does not pass the syntax check:\n${check.stderr || check.stdout}`;
+        }
+
+        if (step.expand) {
+            const run = await ProcessUtils.run([...step.runtime.run(step.script), ...step.expand.args], { cwd: this.cwd });
+
+            if (run.code !== 0) {
+                return `${step.script} must exit 0 given ${step.expand.args.map((arg) => `"${arg}"`).join(" ")} but exited ${run.code}:\n${run.stderr}`;
+            }
+
+            const problem = step.expand.validate(run.stdout);
+
+            return problem === null ? null : `${step.script} printed declarations that are not accepted:\n${problem}`;
         }
 
         if (!SlytherVerifier.READ_ONLY.includes(step.operation)) {

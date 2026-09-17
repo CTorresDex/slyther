@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlytherGenerator } from "../src/classes/SlytherGenerator.class.ts";
@@ -318,5 +318,95 @@ describe("SlytherInstanceChecker references", () => {
 
         expect(statuses(await compile())).toEqual(["k:A kept", "k:B updated (its spec changed)"]);
         expect(statuses(await compile())).toEqual(["k:A kept", "k:B kept"]);
+    });
+});
+
+describe("SlytherInstanceChecker composite", () => {
+    const COMPOSITE = (parts = "one two", prose = "the p") => `${SPEC()}
+@artifact c {
+    a composite
+    operation expand (id: string, parts: string): deterministic { prints a #{k} per part }
+}
+c P (parts: "${parts}") { ${prose} }`;
+    const EXPAND = { ...SCRIPTS, "c/expand/expand.sh": 'for part in $2; do echo "k $part { the $part }"; done' };
+    const expanded = () => readFile(join(root, ".slyther/instances/expanded/c/P.sly"), "utf-8");
+
+    test("an instance of a composite kind is expanded, and what it emits is created and checked under it", async () => {
+        await writeFile(join(root, "main.sly"), COMPOSITE());
+
+        const report = await compile(new FakeGenerator(EXPAND));
+
+        expect(statuses(report)).toEqual([
+            "c:P expanded (emitted 2 instances)",
+            "k:P::one created (missing)",
+            "k:P::two created (missing)",
+            "k:A pass (never evaluated)",
+            "k:B pass (never evaluated)",
+        ]);
+        expect(report.slice(1, 3).map((entry) => entry.parent)).toEqual(["c:P", "c:P"]);
+        expect(await read("P::one.txt")).toBe("the one\n");
+        expect(await expanded()).toBe("k one { the one }\nk two { the two }\n");
+
+        const recorded = await manifest();
+
+        expect(recorded["k:P::one"].parent).toBe("c:P");
+        expect(recorded["c:P"].result).toBe("pass");
+        expect(statuses(await compile(new FakeGenerator(EXPAND)))).toEqual(["c:P expanded (emitted 2 instances)", "k:P::one kept", "k:P::two kept", "k:A kept", "k:B kept"]);
+    });
+
+    test("editing the prose of the parent updates what it emitted", async () => {
+        await writeFile(join(root, "main.sly"), COMPOSITE());
+        await compile(new FakeGenerator(EXPAND));
+        await writeFile(join(root, "main.sly"), COMPOSITE("one two", "the p, changed"));
+
+        expect(statuses(await project(new FakeGenerator(EXPAND)).check())).toEqual([
+            "c:P expanded (emitted 2 instances)",
+            "k:P::one pass (its spec changed)",
+            "k:P::two pass (its spec changed)",
+            "k:A kept",
+            "k:B kept",
+        ]);
+        expect(statuses(await compile(new FakeGenerator(EXPAND)))).toEqual([
+            "c:P expanded (emitted 2 instances)",
+            "k:P::one updated (its spec changed)",
+            "k:P::two updated (its spec changed)",
+            "k:A kept",
+            "k:B kept",
+        ]);
+    });
+
+    test("what the parent no longer emits is an orphan, left alone and reported until its code is gone", async () => {
+        await writeFile(join(root, "main.sly"), COMPOSITE());
+        await compile(new FakeGenerator(EXPAND));
+        await writeFile(join(root, "main.sly"), COMPOSITE("one"));
+
+        const report = await compile(new FakeGenerator(EXPAND));
+
+        expect(statuses(report)).toEqual([
+            "c:P expanded (emitted 1 instance)",
+            "k:P::one updated (its spec changed)",
+            "k:P::two orphan (no longer emitted by c:P)",
+            "k:A kept",
+            "k:B kept",
+        ]);
+        expect(await read("P::two.txt")).toBe("the two\n");
+        expect((await manifest())["k:P::two"].result).toBe("orphan");
+        expect(await expanded()).toBe("k one { the one }\n");
+
+        await rm(join(code(), "P::two.txt"));
+
+        expect(statuses(await compile(new FakeGenerator(EXPAND)))).toEqual(["c:P expanded (emitted 1 instance)", "k:P::one kept", "k:A kept", "k:B kept"]);
+        expect((await manifest())["k:P::two"]).toBeUndefined();
+    });
+
+    test("when what it emits is not valid, the parent fails with the reason and nothing is created", async () => {
+        await writeFile(join(root, "main.sly"), `${COMPOSITE()}\n@artifact plain\nplain X { x }`);
+
+        const generator = new FakeGenerator({ ...EXPAND, "c/expand/expand.sh": 'if [ "$1" = sample ]; then echo "k one { ok }"; else echo "plain one { nope }"; fi' });
+        const report = await compile(generator);
+
+        expect(statuses(report)).toEqual(["c:P fail (what it emitted is not valid)", "k:A pass (never evaluated)", "k:B pass (never evaluated)"]);
+        expect(report[0]!.errors).toEqual(['c:P emitted the plain "P::one", but its expand does not reference plain: it may only emit k.']);
+        expect(await stat(join(code(), "P::one.txt")).then(() => true, () => false)).toBe(false);
     });
 });

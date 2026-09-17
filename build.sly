@@ -83,6 +83,9 @@ class SlytherVerifier {
     it prints none, and print nothing when they exit 1. When signature exits 0, every line it prints must
     have the `key shape` form, and when uses exits 0, every line must have the `kind:id key` form.
 
+    The expand of a composite kind is also run, with a sample value for each of its params: it must exit 0
+    and what it prints must be read by #{Compiler::SlytherExpansion} without error, for an instance named
+    after the sample.
 }
 
 class SlytherArtifactManifest {
@@ -133,6 +136,11 @@ class SlytherArtifactBuilder {
     dependencies file of the lang is rewritten when their union changed and installed, and the script is
     checked with #{SlytherVerifier}: when it fails, the failure is sent back with `fix`, up to three
     attempts, after which the build throws and the file is not recorded, so the next build tries again.
+
+    The expand of a composite kind is built as any deterministic operation, and its instructions also
+    hold, for every kind its prose references, the rules of the kind and the params of its create, since
+    what it prints must declare what create needs, and the form of a declaration as
+    #{Compiler::SlytherExpansion} reads it.
 
     Every #{Compiler::SlytherRunScript} it is given gets a folder `@run/name`, which no kind can take, holding
     a script per step, built after every operation so it may run them. The input hash of a step of a

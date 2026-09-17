@@ -94,3 +94,23 @@ describe("SlytherArtifactKind locate", () => {
         expect(kind!.warnings).toHaveLength(0);
     });
 });
+
+describe("SlytherArtifactKind composite", () => {
+    const COMPOSITE = `@artifact k {\n ${LOCATE}\n}\n@artifact c {\n operation expand (id: string): deterministic { emits a #{k} }\n}`;
+
+    test("a kind with expand is composite: it needs no locate, gets no built-in operation, and emits the kinds expand references", () => {
+        const c = kinds(COMPOSITE).find((kind) => kind.name === "c")!;
+
+        expect(c.composite).toBe(true);
+        expect(c.emits).toEqual(["k"]);
+        expect(c.operations.map((operation) => operation.artifact.name)).toEqual(["c::expand"]);
+        expect(kinds(COMPOSITE).find((kind) => kind.name === "k")!.composite).toBe(false);
+    });
+
+    test("throws when expand is not deterministic or the kind defines anything else", () => {
+        expect(() => kinds("@artifact c {\n operation expand (id: string) { emits }\n}")).toThrow('Operation "c::expand" must be deterministic.');
+        expect(() => kinds(`@artifact c {\n ${LOCATE}\n operation expand (id: string): deterministic { emits }\n}`)).toThrow(
+            'Kind "c" is composite, since it defines expand, so it cannot define "locate": an instance of it has no code of its own.',
+        );
+    });
+});

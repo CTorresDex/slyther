@@ -15,6 +15,8 @@ class SlytherProject {
     - .slyther/artifacts: The operations of every kind as built, see #{Build::SlytherArtifactBuilder}
     - .slyther/artifacts/manifest.json: The #{Build::SlytherArtifactManifest}
     - .slyther/instances/manifest.json: The #{Check::SlytherInstanceManifest}
+    - .slyther/instances/expanded/kind/name.sly: What the instance of a composite kind emitted, see
+      #{Check::SlytherInstanceChecker}
 
     .slyther/build is ignored by version control, .slyther/artifacts and .slyther/instances are committed,
     so a checkout runs the operations without building them again and a check evaluates only what changed.
@@ -69,6 +71,6 @@ method SlytherProject::check {
 
 method SlytherProject::checkInstances {
     Checks every instance the parsed script declares with #{Check::SlytherInstanceChecker}, given the compile
-    and max options, and returns what happened to every one: created, updated, fixed, pass, fail, missing or
-    kept, with its reason and its errors
+    and max options, and returns what happened to every one: created, updated, fixed, pass, fail, missing,
+    kept, expanded or orphan, with its reason, its errors and its parent when it was emitted
 }

@@ -15,6 +15,8 @@ export class SlytherInstanceManifest {
             {
                 /** The hash of the artifact that declares the instance and of what it leans on, so a change to its prose, its args or its rules is noticed. */
                 specHash: string;
+                /** The instance whose expand emitted it, when it was not declared by hand. */
+                parent?: string;
                 /** The hash of the code of the instance, as located, without where it is. */
                 contentHash: string;
                 /** The `key shape` lines of the instance when it was checked, if its kind prints them. */
@@ -23,7 +25,7 @@ export class SlytherInstanceManifest {
                 dependencies: Record<string, { contentHash: string; signature?: string[] }>;
                 /** The hash of the scripts and prompts it was evaluated with. */
                 evaluatedWith: string;
-                result: "pass" | "fail" | "missing";
+                result: "pass" | "fail" | "missing" | "orphan";
                 errors: string[];
             }
         >,

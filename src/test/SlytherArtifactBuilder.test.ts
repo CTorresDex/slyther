@@ -219,6 +219,43 @@ describe("SlytherArtifactBuilder", () => {
     });
 });
 
+describe("SlytherArtifactBuilder expand", () => {
+    const COMPOSITE = `${SPEC()}
+@artifact c {
+    a composite
+    operation expand (id: string, parts: string): deterministic { prints a #{k} per part }
+}`;
+    const EXPAND = { "c/expand/expand.sh": 'for part in $2; do echo "k $part { the $part }"; done' };
+
+    test("tells the generator what an expand prints and which kinds it may emit, and verifies what it prints", async () => {
+        const generator = new FakeGenerator({ ...SCRIPTS, ...EXPAND });
+        const prompts: string[] = [];
+
+        generator.ask = async function <T>(this: FakeGenerator, prompt: string, schema: object, session?: string) {
+            prompts.push(prompt);
+
+            return FakeGenerator.prototype.ask.call(this, prompt, schema, session) as Promise<{ result: T; session: string }>;
+        };
+
+        const report = await build(generator, COMPOSITE);
+        const prompt = prompts.find((candidate) => candidate.includes("Write the script `c/expand/expand.sh`"))!;
+
+        expect(report.map((entry) => entry.path)).toContain("c/expand/expand.sh");
+        expect(prompt).toContain("## What it prints");
+        expect(prompt).toContain("`endpoint create` printed for `Users` declares `Users::create`");
+        expect(prompt).toContain("### k, whose create needs content (string)\n\nrules of k");
+        expect((await manifest()).operations["c::expand"].params.map((param: { name: string }) => param.name)).toEqual(["id", "parts"]);
+    });
+
+    test("an expand that prints what is not accepted fails verification", async () => {
+        const generator = new FakeGenerator({ ...SCRIPTS, "c/expand/expand.sh": 'echo "c nested { x }"' });
+
+        expect(build(generator, COMPOSITE, 1)).rejects.toThrow(
+            'c/expand/expand.sh printed declarations that are not accepted:\nc:sample emitted the c "sample::nested", but its expand does not reference c: it may only emit k.',
+        );
+    });
+});
+
 describe("SlytherProject run", () => {
     test("runs a deterministic operation and prints the markdown of one that is not", async () => {
         await writeFile(join(root, "main.sly"), SPEC().replace(INSTANCES, ""));

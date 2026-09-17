@@ -2,9 +2,12 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 import { ProcessUtils } from "./ProcessUtils.class.ts";
+import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
-import type { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
+import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
+import { SlytherExpansion } from "./SlytherExpansion.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import type { SlytherRunScript } from "./SlytherRunScript.class.ts";
 import { SlytherRuntime } from "./SlytherRuntime.class.ts";
@@ -37,16 +40,23 @@ export class SlytherArtifactBuilder {
     /**
      * Brings the artifacts folder in line with the kinds and the scripts that run the project: writes what
      * is new or changed, removes what is gone, and leaves alone what is up to date. Returns what it did to
-     * every file, and throws when a script cannot be made to pass verification.
+     * every file, and throws when a script cannot be made to pass verification. The parsed script the
+     * kinds come from is what the expand of a composite kind is verified against, since what it prints
+     * may reference any artifact of it.
      */
     async build(
         kinds: SlytherArtifactKind[],
         scripts: SlytherRunScript[] = [],
+        parsed: ParsedSlytherScript = new ParsedSlytherScript(
+            kinds.flatMap((kind) => [kind.artifact, ...kind.operations.flatMap((operation) => [operation.artifact, ...operation.steps.map((step) => step.artifact)])]),
+            new Map(),
+            new Map(),
+        ),
     ): Promise<{ path: string; status: "built" | "rebuilt" | "kept" | "removed" }[]> {
         this.manifest = await SlytherArtifactManifest.load(join(this.cwd, this.artifacts, SlytherArtifactManifest.FILE));
         this.installed = new Map();
 
-        const desired = [...this.desiredOf(kinds), ...this.desiredOfScripts(kinds, scripts)];
+        const desired = [...this.desiredOf(kinds, parsed), ...this.desiredOfScripts(kinds, scripts)];
         const report: { path: string; status: "built" | "rebuilt" | "kept" | "removed" }[] = [];
 
         for (const path of Object.keys(this.manifest.files)) {
@@ -116,7 +126,7 @@ export class SlytherArtifactBuilder {
     }
 
     /** Every file the kinds ask for, in the order they are built, along with the operation record each belongs to. */
-    private desiredOf(kinds: SlytherArtifactKind[]): SlytherArtifactBuilder["entry"][] {
+    private desiredOf(kinds: SlytherArtifactKind[], parsed: ParsedSlytherScript): SlytherArtifactBuilder["entry"][] {
         const entries: SlytherArtifactBuilder["entry"][] = [];
 
         for (const kind of kinds) {
@@ -150,7 +160,7 @@ export class SlytherArtifactBuilder {
                         script: runtime
                             ? {
                                   runtime,
-                                  instructions: () => this.instructionsOf(kind, operation, step, stepName, path, runtime, record),
+                                  instructions: () => this.instructionsOf(kinds, kind, operation, step, stepName, path, runtime, record),
                                   context: this.contextOf(kinds, kind, operation, step),
                                   verify: () =>
                                       new SlytherVerifier(this.cwd).verify({
@@ -159,6 +169,13 @@ export class SlytherArtifactBuilder {
                                           runtime,
                                           list: name === "list" ? undefined : this.builtScriptOf(kind.name, "list"),
                                           locate: name === "list" ? this.builtScriptOf(kind.name, "locate") : undefined,
+                                          expand:
+                                              name === SlytherArtifactKind.EXPAND
+                                                  ? {
+                                                        args: operation.params.map(() => SlytherVerifier.SAMPLE),
+                                                        validate: (output) => SlytherArtifactBuilder.validateExpansion(kinds, kind, parsed, output),
+                                                    }
+                                                  : undefined,
                                       }),
                               }
                             : undefined,
@@ -363,8 +380,32 @@ export class SlytherArtifactBuilder {
         await writeFile(join(this.cwd, this.artifacts, ".gitignore"), `${[...new Set(ignored)].map((dir) => `${dir}/`).join("\n")}\n`);
     }
 
+    /**
+     * Why what an expand printed for a sample instance is not accepted, or null when it is: it is read
+     * as it will be at check time, into the parsed script with the sample instance declared.
+     */
+    private static validateExpansion(kinds: SlytherArtifactKind[], kind: SlytherArtifactKind, parsed: ParsedSlytherScript, output: string): string | null {
+        const taken = new Set(parsed.artifacts.map((artifact) => artifact.name));
+        let name = SlytherVerifier.SAMPLE;
+
+        for (let index = 2; taken.has(name); index++) {
+            name = `${SlytherVerifier.SAMPLE}${index}`;
+        }
+
+        const sample = new SlytherArtifact(kind.name, name, [], [], SlytherVerifier.SAMPLE, []);
+
+        try {
+            SlytherExpansion.of(output, sample, kinds, new ParsedSlytherScript([...parsed.artifacts, sample], new Map(), new Map(), parsed.lang));
+
+            return null;
+        } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+        }
+    }
+
     /** What the generator is told to write a deterministic step. */
     private instructionsOf(
+        kinds: SlytherArtifactKind[],
         kind: SlytherArtifactKind,
         operation: SlytherArtifactKind["operations"][number],
         step: SlytherArtifactKind["operations"][number]["steps"][number],
@@ -412,7 +453,32 @@ export class SlytherArtifactBuilder {
             ...(others.length > 0
                 ? ["- The other operations of the kind are scripts it may run instead of reimplementing them:", ...others]
                 : []),
+            ...(record.name === SlytherArtifactKind.EXPAND ? ["", ...SlytherArtifactBuilder.emitsOf(kinds, kind)] : []),
         ].join("\n");
+    }
+
+    /** What the script of an expand is told about what it prints: the form of a declaration and the kinds it may emit, with what their create needs. */
+    private static emitsOf(kinds: SlytherArtifactKind[], kind: SlytherArtifactKind): string[] {
+        const emitted = kind.emits.map((name) => kinds.find((candidate) => candidate.name === name)!);
+
+        return [
+            "## What it prints",
+            "",
+            `The declarations of the artifacts the ${kind.name} is made of, as they are written in a Slyther script, one per declaration: \`kind name (arg: "value", other: "value") { prose }\`, where the args are optional and the braces hold prose. The name is relative to the ${kind.name}: \`endpoint create\` printed for \`Users\` declares \`Users::create\`. The prose may reference another artifact as \`#{name}\`, and the ${kind.name} itself is always referenced, so the prose need not repeat what it says.`,
+            "",
+            "It may only declare the kinds below, each with the args or the prose its create needs: a param of create that is not given as an arg is filled with the prose, so a declaration without args must have prose.",
+            ...emitted.flatMap((emitted) => {
+                const create = emitted.operation("create");
+                const needed = (create?.params ?? []).filter((param) => param.name !== "id" && param.name !== "errors");
+
+                return [
+                    "",
+                    `### ${emitted.name}${needed.length > 0 ? `, whose create needs ${needed.map((param) => `${param.name} (${param.type}${param.optional ? ", optional" : ""})`).join(", ")}` : ""}`,
+                    "",
+                    emitted.rules || "(no rules)",
+                ];
+            }),
+        ];
     }
 
     /** What the generator is told to write a step of a script that runs the project. */

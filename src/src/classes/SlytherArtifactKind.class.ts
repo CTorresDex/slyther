@@ -13,6 +13,8 @@ export class SlytherArtifactKind {
     private static readonly DETERMINISTIC = "deterministic";
     /** The only configuration a kind or a step may declare. */
     private static readonly LANG = "lang";
+    /** The operation that makes a kind composite: it prints the declarations an instance is made of. */
+    static readonly EXPAND = "expand";
 
     /** The warnings found while grouping the kind, in the order found. */
     readonly warnings: string[] = [];
@@ -133,7 +135,21 @@ export class SlytherArtifactKind {
         return this.operations.find((operation) => operation.artifact.name === `${this.name}::${name}`);
     }
 
+    /** Whether an instance of the kind has no code of its own, only the instances its expand emits. */
+    get composite(): boolean {
+        return this.operation(SlytherArtifactKind.EXPAND) !== undefined;
+    }
+
+    /** The names of the kinds the expand of a composite kind may emit: the ones its prose references. */
+    get emits(): string[] {
+        const expand = this.operation(SlytherArtifactKind.EXPAND);
+        const references = [...(expand?.artifact.references ?? []), ...(expand?.steps.flatMap((step) => step.artifact.references) ?? [])];
+
+        return [...new Set(references.filter((reference) => reference.startsWith("artifact:")).map((reference) => reference.slice("artifact:".length)))];
+    }
+
     private check(parsed: ParsedSlytherScript): void {
+        this.checkComposite();
         for (const operation of this.operations) {
             if (operation.deterministic) {
                 this.checkDeterministic(operation, parsed);
@@ -160,7 +176,7 @@ export class SlytherArtifactKind {
 
         const locate = this.operation("locate");
 
-        if (this.operations.length > 0 && !locate) {
+        if (this.operations.length > 0 && !locate && !this.composite) {
             throw new Error(`Kind "${this.name}" defines operations but no locate operation to find its artifacts with.`);
         }
 
@@ -170,6 +186,30 @@ export class SlytherArtifactKind {
 
         if (locate && !SlytherArtifactKind.isIdSignature(locate.params)) {
             throw new Error(`Operation "${locate.artifact.name}" must have the params (id: string).`);
+        }
+    }
+
+    /**
+     * A composite kind has nothing but its expand, which must be deterministic: its instances have no
+     * code to locate, create, update or evaluate, only the instances expand emits.
+     */
+    private checkComposite(): void {
+        const expand = this.operation(SlytherArtifactKind.EXPAND);
+
+        if (!expand) {
+            return;
+        }
+
+        if (!expand.deterministic) {
+            throw new Error(`Operation "${expand.artifact.name}" must be deterministic.`);
+        }
+
+        const other = this.operations.find((operation) => operation !== expand);
+
+        if (other) {
+            throw new Error(
+                `Kind "${this.name}" is composite, since it defines expand, so it cannot define "${SlytherArtifactKind.shortOf(other.artifact.name)}": an instance of it has no code of its own.`,
+            );
         }
     }
 
@@ -212,7 +252,7 @@ export class SlytherArtifactKind {
      * ones that serve the artifacts referencing an instance of the kind are only added when there is one.
      */
     private addBuiltins(parsed: ParsedSlytherScript): void {
-        if (this.operations.length === 0) {
+        if (this.operations.length === 0 || this.composite) {
             return;
         }
 
@@ -316,5 +356,9 @@ export class SlytherArtifactKind {
         const boundary = name.lastIndexOf("::");
 
         return boundary < 0 ? "" : name.slice(0, boundary);
+    }
+
+    private static shortOf(name: string): string {
+        return name.slice(name.lastIndexOf("::") + 2);
     }
 }

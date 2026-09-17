@@ -16,7 +16,9 @@ one that is missing is created with the create operation of its kind, one whose 
 updated with its update operation, and every one that was never evaluated, or changed, or depends on
 something that changed, is evaluated with its evaluate operation; one that fails is updated with the
 errors and evaluated once more. What it finds is recorded in ${SlytherProject.OUTPUT}/${SlytherProject.INSTANCES}, so
-the next build only works on what changed. Exits 1 when any instance fails or is missing.
+the next build only works on what changed. An instance of a composite kind is expanded first, and what it
+emits is built under it; what its parent no longer emits is reported as an orphan and left alone. Exits 1
+when any instance fails or is missing.
 
 Flags:
   --verbose    print every prompt sent to the LLM and every reply, as they happen
@@ -38,8 +40,8 @@ export default async function (args: string[], context: { flags: Record<string, 
 
     console.log('Instances:')
     for (const entry of instances) {
-        console.log(`  ${entry.status.padEnd(7)} ${entry.key}${entry.reason ? ` (${entry.reason})` : ''}`)
-        for (const error of entry.errors) console.log(`          - ${error}`)
+        console.log(`  ${entry.parent ? '  ' : ''}${entry.status.padEnd(8)} ${entry.key}${entry.reason ? ` (${entry.reason})` : ''}`)
+        for (const error of entry.errors) console.log(`  ${entry.parent ? '  ' : ''}         - ${error}`)
     }
 
     console.log(`${instances.length - failed.length} of ${instances.length} instances comply`)

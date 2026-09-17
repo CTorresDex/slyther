@@ -10,7 +10,9 @@ operations, without touching the code: locates it in ${SlytherProject.OUTPUT}/${
 with the evaluate operation of its kind when it was never evaluated, when its declaration or its code
 changed, when what evaluates it changed, or when an instance it references changed in a way it uses.
 What it finds is recorded in ${SlytherProject.OUTPUT}/${SlytherProject.INSTANCES}, so the next check only evaluates
-what changed. Exits 1 when any instance fails or is missing; run build to create and update them.
+what changed. An instance of a composite kind is expanded first, and what it emits is checked under it;
+what its parent no longer emits is reported as an orphan and left alone. Exits 1 when any instance fails
+or is missing; run build to create and update them.
 
 Flags:
   --verbose    print every prompt sent to the LLM and every reply, as they happen
@@ -28,8 +30,8 @@ export default async function (args: string[], context: { flags: Record<string, 
     const failed = report.filter((entry) => entry.status === 'fail' || entry.status === 'missing')
 
     for (const entry of report) {
-        console.log(`  ${entry.status.padEnd(7)} ${entry.key}${entry.reason ? ` (${entry.reason})` : ''}`)
-        for (const error of entry.errors) console.log(`          - ${error}`)
+        console.log(`  ${entry.parent ? '  ' : ''}${entry.status.padEnd(8)} ${entry.key}${entry.reason ? ` (${entry.reason})` : ''}`)
+        for (const error of entry.errors) console.log(`  ${entry.parent ? '  ' : ''}         - ${error}`)
     }
 
     console.log(`${report.length - failed.length} of ${report.length} instances comply`)
