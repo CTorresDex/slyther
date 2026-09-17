@@ -62,13 +62,15 @@ class SlytherArtifactKind {
     The only qualifier is deterministic, and only an operation may have it: any other qualifier, or a
     qualifier on anything else, must throw an error. A deterministic operation runs as a plain script and
     never with an llm, so it must throw an error when it contains an llm step, and when it has no steps its
-    content is its only step, a deterministic step named after the operation. An operation whose steps are
+    content is its only step, a deterministic step named after the operation. Likewise, an operation that
+    is not deterministic and has no steps has its content as its only step, an llm step named after the
+    operation. An operation whose steps are
     all deterministic but that is not qualified as deterministic is not inferred to be one: it adds a
     warning suggesting the qualifier.
 
     Its static `of` groups the artifacts of a #{ParsedSlytherScript} into kinds and must throw an
     error when an operation is not declared inside a kind, when a step is not declared inside an
-    operation, when an operation that is not deterministic has no steps, or when a kind has a create
+    operation, when an operation that is not deterministic has neither steps nor content, or when a kind has a create
     or update operation but no evaluate operation to verify them with, or when a kind has operations
     but no locate operation, or its locate operation is not deterministic, or its params are not exactly
     `(id: string)`. A kind with no operations is allowed: it is declared but not yet defined.
@@ -114,6 +116,28 @@ class ParsedSlytherScript {
     - lang: The language declared by the `@lang` line, if any
 }
 
+class SlytherRunScript {
+    A script that runs the project, as defined by a `@run` block of a #{ParsedSlytherScript}. It is always
+    built ahead of time into deterministic scripts and never runs prose, contains:
+
+    - artifact: The #{SlytherArtifact} of the script, of kind run, whose content is what the script does
+    - name: The name of the script, `default` when the block names none
+    - closureHash: The closure hash of the script
+    - scopeHash: The scope hash of the script, so it stays the same when one of its steps changes
+    - params: The signature it receives when it runs, as the params of an operation
+    - lang: The language its args declare, if any
+    - steps: Every step in the order written, each with its #{SlytherArtifact}, its closure hash and its lang
+    - references: Every artifact the script or its steps reference, so the prose they point to can be read
+
+    The args of a script are its params, which must be types, and its configuration, whose only entry is
+    lang. A step is only of kind deterministic, declares no params, and its lang is the one its args
+    declare, else the one of its script, else the one of the #{ParsedSlytherScript}, and when none
+    declares it, it must throw an error. When a script has no steps, its content is its only step, named
+    after the script, as a deterministic operation without steps.
+
+    Its static `of` groups the artifacts of a #{ParsedSlytherScript} into scripts, in the order written.
+}
+
 class SlytherParser {
     Reads a #{SlytherScript} and returns a #{ParsedSlytherScript}
 
@@ -151,6 +175,14 @@ class SlytherParser {
 
     The content of an artifact is the prose of its body without the indentation its lines share and
     without the blank lines around it, so it reads the same wherever it is written back.
+
+    A `@run name (params) (config) { prose }` line declares a script that runs the project, as an artifact of
+    the built-in kind run named `run::name`, inside the implicit namespace run, whatever `@use` is in effect.
+    The name is optional and defaults to `default`, and so are both parens: when there is only one, it holds
+    the params when it declares a type and the configuration otherwise, and when there are two, a type in
+    the second or a value in the first must throw an error. The braces are required, and the body may
+    only nest deterministic blocks, its steps. Since run is a kind of its own, declaring `@artifact run`
+    must throw an error.
 
     Declaring the same name twice in the same scope must throw an error.
 }

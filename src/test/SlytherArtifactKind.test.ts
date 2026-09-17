@@ -25,7 +25,20 @@ describe("SlytherArtifactKind deterministic operations", () => {
         );
     });
 
-    test("throws when an operation that is not deterministic has no steps", () => {
+    test("an operation that is not deterministic without steps has its content as its only llm step", () => {
+        const [kind] = kinds(`@artifact k {\n ${LOCATE}\n operation evaluate { checks it }\n}`);
+        const evaluate = kind!.operation("evaluate")!;
+
+        expect(evaluate.deterministic).toBe(false);
+        expect(evaluate.steps).toHaveLength(1);
+        expect(evaluate.steps[0]!.artifact.name).toBe("k::evaluate::evaluate");
+        expect(evaluate.steps[0]!.artifact.artifact).toBe("llm");
+        expect(evaluate.steps[0]!.artifact.content).toBe("checks it");
+        expect(evaluate.steps[0]!.lang).toBeUndefined();
+        expect(evaluate.steps[0]!.closureHash).toBe(evaluate.closureHash);
+    });
+
+    test("throws when an operation that is not deterministic has neither steps nor content", () => {
         expect(() => kinds(`@artifact k {\n ${LOCATE}\n operation evaluate { }\n}`)).toThrow(
             'Operation "k::evaluate" has no steps.',
         );

@@ -11,6 +11,13 @@ export class SlytherParser {
     /** `@artifact Name (args): qualifiers { tail`: declares a kind. The brace is optional, the tail is whatever follows it. */
     private static readonly ARTIFACT =
         /^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?\s*(?:(\{)(.*))?$/;
+    /** `@run name (params) (config) { tail`: declares a script that runs the project. Only the brace is required. */
+    private static readonly RUN =
+        /^\s*@run(?:\s+([A-Za-z_][\w-]*))?\s*(?:\(([^)]*)\))?\s*(?:\(([^)]*)\))?\s*(?:(\{)(.*))?$/;
+    /** The namespace every script declared with `@run` lives in, which is also its kind. */
+    static readonly RUN_KIND = "run";
+    /** The name of a script declared with `@run` and no name. */
+    static readonly RUN_DEFAULT = "default";
     private static readonly IMPORT = /^\s*@import\s+["']([^"']+)["']\s*$/;
     private static readonly LANG = /^\s*@lang\s+["']([^"']+)["']\s*$/;
     private static readonly USE = /^\s*@use\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*$/;
@@ -36,6 +43,7 @@ export class SlytherParser {
     private static readonly CONTAINS: Record<string, readonly string[]> = {
         artifact: ["operation"],
         operation: ["llm", "deterministic"],
+        run: ["deterministic"],
     };
 
     private declarations = new Map<
@@ -105,7 +113,35 @@ export class SlytherParser {
             if (kind) {
                 const [, name, args, qualifiers, open, tail] = kind;
 
+                if (name === SlytherParser.RUN_KIND) {
+                    throw new Error(`"${name}" is the kind of the scripts declared with @run and cannot be declared as a kind.`);
+                }
+
                 index = this.declareAt(lines, index, "artifact", name!, name!, "", args ?? "", qualifiers ?? "", open ? tail! : undefined);
+                continue;
+            }
+
+            const run = SlytherParser.RUN.exec(line);
+
+            if (run) {
+                const [, name = SlytherParser.RUN_DEFAULT, params, config, open, tail] = run;
+
+                if (!open) {
+                    throw new Error(`The script "${name}" declared with @run must have a body in braces.`);
+                }
+
+                this.implicitNamespace(SlytherParser.RUN_KIND);
+                index = this.declareAt(
+                    lines,
+                    index,
+                    SlytherParser.RUN_KIND,
+                    name,
+                    `${SlytherParser.RUN_KIND}::${name}`,
+                    SlytherParser.RUN_KIND,
+                    SlytherParser.runArgsOf(name, params, config),
+                    "",
+                    tail!,
+                );
                 continue;
             }
 
@@ -113,18 +149,7 @@ export class SlytherParser {
 
             if (use) {
                 scope = use[1]!;
-
-                if (!this.declarations.has(scope)) {
-                    this.declarations.set(scope, {
-                        artifact: "namespace",
-                        args: "",
-                        qualifiers: "",
-                        content: "",
-                        scope: "",
-                    });
-                    this.implicit.add(scope);
-                }
-
+                this.implicitNamespace(scope);
                 continue;
             }
 
@@ -147,6 +172,40 @@ export class SlytherParser {
 
             index = this.declareAt(lines, index, artifact!, name!, qualified, scope, args ?? "", qualifiers ?? "", open ? tail! : undefined);
         }
+    }
+
+    /** Declares the namespace unless something of that name is declared already, which a later declaration may replace. */
+    private implicitNamespace(name: string): void {
+        if (!this.declarations.has(name)) {
+            this.declarations.set(name, { artifact: "namespace", args: "", qualifiers: "", content: "", scope: "" });
+            this.implicit.add(name);
+        }
+    }
+
+    /**
+     * The args of a script as one list, params first. With two parens the first holds only types and the
+     * second only values; a single paren holds either, but never both.
+     */
+    private static runArgsOf(name: string, params: string | undefined, config: string | undefined): string {
+        const entriesOf = (text: string | undefined) =>
+            text === undefined ? [] : StringUtils.splitUnquoted(text, ",").filter((entry) => entry.trim().length > 0);
+        const isType = (entry: string) => {
+            const value = entry.slice(entry.indexOf(":") + 1).trim();
+
+            return !/^["']/.test(value) && !SlytherParser.NUMBER.test(value) && value !== "true" && value !== "false";
+        };
+        const first = entriesOf(params);
+        const second = entriesOf(config);
+
+        if (config !== undefined && (first.some((entry) => !isType(entry)) || second.some(isType))) {
+            throw new Error(`The script "${name}" declared with @run takes its params in the first parens and its configuration in the second.`);
+        }
+
+        if (config === undefined && first.some(isType) && first.some((entry) => !isType(entry))) {
+            throw new Error(`The script "${name}" declared with @run takes its params and its configuration in separate parens.`);
+        }
+
+        return [...first, ...second].join(",");
     }
 
     /**

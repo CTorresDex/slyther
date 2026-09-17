@@ -26,9 +26,17 @@ command build {
 }
 
 command run {
+    Input: the name of the script, and its args in order
+
+    Runs a script of the project using the #{Project::SlytherProject::run} method and exits with its code. The
+    first arg is the name of the script when a script of that name is built, otherwise every arg belongs
+    to the default script
+}
+
+command op {
     Input: the kind, the operation, its args in order, and the --execute flag
 
-    Runs the operation using the #{Project::SlytherProject::run} method: prints what it returns and exits with
+    Runs the operation using the #{Project::SlytherProject::runOperation} method: prints what it returns and exits with
     its code. With --execute, an operation that is not deterministic runs through a #{Build::ClaudeCLIGenerator}
 }
 command check {

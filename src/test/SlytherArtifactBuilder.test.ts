@@ -227,18 +227,18 @@ describe("SlytherProject run", () => {
 
         await project.build();
 
-        expect((await project.run("k", "locate", ["a"])).code).toBe(0);
-        expect((await project.run("k", "locate", ["b"])).code).toBe(1);
+        expect((await project.runOperation("k", "locate", ["a"])).code).toBe(0);
+        expect((await project.runOperation("k", "locate", ["b"])).code).toBe(1);
 
-        const printed = await project.run("k", "create", ["a", "hello"]);
+        const printed = await project.runOperation("k", "create", ["a", "hello"]);
 
         expect(printed.code).toBe(0);
         expect(printed.output).toContain('sh ../artifacts/k/create/scaffold.sh "a" "hello"');
 
-        const executed = await project.run("k", "create", ["a", "hello"], { execute: new FakeGenerator({}) });
+        const executed = await project.runOperation("k", "create", ["a", "hello"], { execute: new FakeGenerator({}) });
 
         expect(executed.output).toStartWith("executed:# k::create");
-        expect(project.run("k", "create", ["a"])).rejects.toThrow('The operation "k::create" takes (id: string, content: string), not 1 argument.');
-        expect(project.run("k", "nope", [])).rejects.toThrow('The operation "k::nope" is not built');
+        expect(project.runOperation("k", "create", ["a"])).rejects.toThrow('The operation "k::create" takes (id: string, content: string), not 1 argument.');
+        expect(project.runOperation("k", "nope", [])).rejects.toThrow('The operation "k::nope" is not built');
     });
 });

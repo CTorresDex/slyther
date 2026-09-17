@@ -1,36 +1,25 @@
-import { ClaudeCLIGenerator } from '../classes/ClaudeCLIGenerator.class.ts'
 import { SlytherProject } from '../classes/SlytherProject.class.ts'
 
 export const help = {
-    short: 'Run an operation of a kind built by the project',
-    long: `Usage: slyther run <kind> <operation> [args...] [--execute]
+    short: 'Run a script of the Slyther project',
+    long: `Usage: slyther run [script] [args...]
 
-Runs the operation of the kind as built into ${SlytherProject.OUTPUT}/${SlytherProject.ARTIFACTS}, with the
-args as its params, in the order the operation declares them. A deterministic operation runs its scripts
-in order from ${SlytherProject.OUTPUT}/${SlytherProject.SOURCE}, the folder the code of the project lives in,
-and exits with the code of the first one that fails. An operation that is not deterministic prints the
-markdown that orchestrates it, with the params substituted, or runs it through the LLM when --execute is given.
+Runs a script declared with @run, as built into ${SlytherProject.OUTPUT}/${SlytherProject.ARTIFACTS}, with the args as
+its params, in the order the script declares them. Its steps run in order from ${SlytherProject.OUTPUT}/${SlytherProject.SOURCE}
+in this terminal, and it exits with the code of the first one that fails.
+
+The first arg names the script when a script of that name is built, otherwise every arg belongs to the
+script declared with no name, the default one.
 
 Arguments:
-  <kind>        the kind of artifact
-  <operation>   the operation of the kind
-  [args...]     the params of the operation, in order
-
-Flags:
-  --execute     run the markdown of an operation that is not deterministic through the LLM`,
+  [script]      the name of the script, default when omitted
+  [args...]     the params of the script, in order`,
 }
 
-export default async function (args: string[], context: { flags: Record<string, string | boolean> }) {
-    const [kind, operation, ...params] = args
-
-    if (!kind || !operation) throw new Error('Usage: slyther run <kind> <operation> [args...]')
-
+export default async function (args: string[]) {
     const project = new SlytherProject(process.cwd())
-    const result = await project.run(kind, operation, params, {
-        execute: context.flags.execute === true ? new ClaudeCLIGenerator() : undefined,
-    })
+    const [first, ...rest] = args
+    const named = first !== undefined && (await project.scripts()).includes(first)
 
-    if (result.output) process.stdout.write(result.output)
-
-    process.exitCode = result.code
+    process.exitCode = named ? await project.run(first, rest) : await project.run(undefined, args)
 }

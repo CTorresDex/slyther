@@ -36,6 +36,10 @@ class SlytherGenerator {
     asked for, the dependencies they declare and the session, and `fix`, which resumes the session with the
     reason the files failed and returns them corrected. Both throw when a reply lacks an expected file or
     adds one that was not asked for.
+
+    It also defines `review`, which asks, in a session of its own so the writer never approves itself,
+    whether the files do what the instructions say, reading them without running them, and returns a
+    verdict of pass and the errors found.
 }
 
 class SlytherTracedGenerator {
@@ -78,6 +82,7 @@ class SlytherVerifier {
     the ids locate takes; the others must exit 0 or 1 given the first id list prints, or a sample id when
     it prints none, and print nothing when they exit 1. When signature exits 0, every line it prints must
     have the `key shape` form, and when uses exits 0, every line must have the `kind:id key` form.
+
 }
 
 class SlytherArtifactManifest {
@@ -87,6 +92,9 @@ class SlytherArtifactManifest {
       deterministic, its params, the markdown that orchestrates it when it is not deterministic, and its
       steps in order, each with its name, its kind, its path relative to the artifacts folder and, for a
       deterministic one, its lang and the command that runs it
+    - scripts: Every #{Compiler::SlytherRunScript} built, keyed by its name, with its name, its params and its
+      steps in order, each with its name, its path relative to the artifacts folder, its lang and the
+      command that runs it
     - files: Every file built, keyed by its path relative to the artifacts folder, with the input hash it
       was built from, the output hash of the content it was written with, and the dependencies it declares
 
@@ -125,6 +133,15 @@ class SlytherArtifactBuilder {
     dependencies file of the lang is rewritten when their union changed and installed, and the script is
     checked with #{SlytherVerifier}: when it fails, the failure is sent back with `fix`, up to three
     attempts, after which the build throws and the file is not recorded, so the next build tries again.
+
+    Every #{Compiler::SlytherRunScript} it is given gets a folder `@run/name`, which no kind can take, holding
+    a script per step, built after every operation so it may run them. The input hash of a step of a
+    script is the hash of its closure hash, the scope hash of its script, its lang and its path. It is
+    asked from the generator with the prose of the script and of the step, its params, the conventions of a
+    script that runs the project, which may run for as long as the project does, and the commands of every
+    deterministic operation built, and its context holds the prose of every artifact the script references.
+    It is checked for syntax, never run, since it may never exit, and then reviewed with the `review` of the
+    generator against those instructions: its errors are sent back with `fix` as any other failure.
 
     The manifest is saved after every file is built, so a build that fails halfway keeps what it did, and
     a .gitignore inside the artifacts folder ignores whatever the runtimes in use create.

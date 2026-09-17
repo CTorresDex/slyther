@@ -6,6 +6,7 @@ import { ProcessUtils } from "./ProcessUtils.class.ts";
 import { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
 import type { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
+import type { SlytherRunScript } from "./SlytherRunScript.class.ts";
 import { SlytherRuntime } from "./SlytherRuntime.class.ts";
 import { SlytherVerifier } from "./SlytherVerifier.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
@@ -17,6 +18,8 @@ export class SlytherArtifactBuilder {
     private static readonly ENTRY = "operation.md";
     /** The operations built first, since the others may call them. */
     private static readonly FIRST = ["locate", "list", "signature", "uses"];
+    /** The folder the scripts that run the project are built into, a name no kind can take. */
+    static readonly RUN = "@run";
 
     private manifest!: SlytherArtifactManifest;
     private installed = new Map<string, string>();
@@ -32,15 +35,18 @@ export class SlytherArtifactBuilder {
     ) {}
 
     /**
-     * Brings the artifacts folder in line with the kinds: writes what is new or changed, removes what
-     * is gone, and leaves alone what is up to date. Returns what it did to every file, and throws when a
-     * script cannot be made to pass verification.
+     * Brings the artifacts folder in line with the kinds and the scripts that run the project: writes what
+     * is new or changed, removes what is gone, and leaves alone what is up to date. Returns what it did to
+     * every file, and throws when a script cannot be made to pass verification.
      */
-    async build(kinds: SlytherArtifactKind[]): Promise<{ path: string; status: "built" | "rebuilt" | "kept" | "removed" }[]> {
+    async build(
+        kinds: SlytherArtifactKind[],
+        scripts: SlytherRunScript[] = [],
+    ): Promise<{ path: string; status: "built" | "rebuilt" | "kept" | "removed" }[]> {
         this.manifest = await SlytherArtifactManifest.load(join(this.cwd, this.artifacts, SlytherArtifactManifest.FILE));
         this.installed = new Map();
 
-        const desired = this.desiredOf(kinds);
+        const desired = [...this.desiredOf(kinds), ...this.desiredOfScripts(kinds, scripts)];
         const report: { path: string; status: "built" | "rebuilt" | "kept" | "removed" }[] = [];
 
         for (const path of Object.keys(this.manifest.files)) {
@@ -53,8 +59,14 @@ export class SlytherArtifactBuilder {
         }
 
         for (const key of Object.keys(this.manifest.operations)) {
-            if (!desired.some((entry) => `${entry.kind}::${entry.operation}` === key)) {
+            if (!desired.some((entry) => entry.owner.operation === key)) {
                 delete this.manifest.operations[key];
+            }
+        }
+
+        for (const key of Object.keys(this.manifest.scripts)) {
+            if (!desired.some((entry) => entry.owner.script === key)) {
+                delete this.manifest.scripts[key];
             }
         }
 
@@ -65,16 +77,20 @@ export class SlytherArtifactBuilder {
         }
 
         const pending = desired.filter((entry) => reasons.get(entry.path) !== null);
-        const scripts = pending.filter((entry) => entry.script !== undefined).length;
+        const generated = pending.filter((entry) => entry.script !== undefined).length;
 
         if (pending.length > 0) {
-            this.options.log?.(`${pending.length} of ${desired.length} artifact files to build, ${scripts} with the llm`);
+            this.options.log?.(`${pending.length} of ${desired.length} artifact files to build, ${generated} with the llm`);
         }
 
         for (const entry of desired) {
             const reason = reasons.get(entry.path)!;
 
-            this.manifest.operations[`${entry.kind}::${entry.operation}`] = entry.record;
+            if (entry.owner.operation) {
+                this.manifest.operations[entry.owner.operation] = entry.owner.record as SlytherArtifactManifest["operations"][string];
+            } else {
+                this.manifest.scripts[entry.owner.script!] = entry.owner.record as SlytherArtifactManifest["scripts"][string];
+            }
 
             if (reason === null) {
                 report.push({ path: entry.path, status: "kept" });
@@ -93,7 +109,7 @@ export class SlytherArtifactBuilder {
             report.push({ path: entry.path, status });
         }
 
-        await this.writeIgnore(kinds);
+        await this.writeIgnore(kinds, scripts);
         await this.manifest.save();
 
         return report;
@@ -128,12 +144,24 @@ export class SlytherArtifactBuilder {
 
                     record.steps.push({ name: stepName, kind: runtime ? "deterministic" : "llm", path, lang: step.lang, run });
                     entries.push({
-                        kind: kind.name,
-                        operation: name,
                         path,
                         inputHash,
-                        record,
-                        script: runtime ? { runtime, operation: name, kind, step, stepName, kinds } : undefined,
+                        owner: { operation: `${kind.name}::${name}`, record },
+                        script: runtime
+                            ? {
+                                  runtime,
+                                  instructions: () => this.instructionsOf(kind, operation, step, stepName, path, runtime, record),
+                                  context: this.contextOf(kinds, kind, operation, step),
+                                  verify: () =>
+                                      new SlytherVerifier(this.cwd).verify({
+                                          operation: name,
+                                          script: join(this.artifacts, path),
+                                          runtime,
+                                          list: name === "list" ? undefined : this.builtScriptOf(kind.name, "list"),
+                                          locate: name === "list" ? this.builtScriptOf(kind.name, "locate") : undefined,
+                                      }),
+                              }
+                            : undefined,
                         content: runtime ? undefined : this.promptOf(kind, operation, step),
                     });
                 }
@@ -143,14 +171,58 @@ export class SlytherArtifactBuilder {
 
                     record.entry = path;
                     entries.push({
-                        kind: kind.name,
-                        operation: name,
                         path,
                         inputHash: SlytherArtifactBuilder.hash(operation.closureHash, kind.scopeHash, this.artifacts, path),
-                        record,
+                        owner: { operation: `${kind.name}::${name}`, record },
                         content: this.entryOf(kind, operation, record),
                     });
                 }
+            }
+        }
+
+        return entries;
+    }
+
+    /**
+     * Every file the scripts that run the project ask for: a script per step, built after every operation
+     * so it may run them, checked for syntax and reviewed by the generator, since it may never exit.
+     */
+    private desiredOfScripts(kinds: SlytherArtifactKind[], scripts: SlytherRunScript[]): SlytherArtifactBuilder["entry"][] {
+        const entries: SlytherArtifactBuilder["entry"][] = [];
+
+        for (const script of scripts) {
+            const record: SlytherArtifactManifest["scripts"][string] = { name: script.name, params: script.params, steps: [] };
+
+            for (const step of script.steps) {
+                const stepName = SlytherArtifactBuilder.shortOf(step.artifact.name);
+                const runtime = SlytherRuntime.of(step.lang, this.artifacts);
+                const path = join(SlytherArtifactBuilder.RUN, script.name, `${stepName}.${runtime.extension}`);
+                let instructions = "";
+
+                record.steps.push({ name: stepName, path, lang: step.lang, run: runtime.run(join(this.artifacts, path)) });
+                entries.push({
+                    path,
+                    inputHash: SlytherArtifactBuilder.hash(step.closureHash, script.scopeHash, step.lang, this.artifacts, path),
+                    owner: { script: script.name, record },
+                    script: {
+                        runtime,
+                        instructions: () => (instructions = this.runInstructionsOf(script, step, stepName, path, runtime)),
+                        context: script.references.map((artifact) => ({ path: `${artifact.artifact}:${artifact.name}`, content: artifact.content })),
+                        verify: async (content) => {
+                            const syntax = await new SlytherVerifier(this.cwd).verify({ operation: SlytherArtifactBuilder.RUN, script: join(this.artifacts, path), runtime });
+
+                            if (syntax !== null) {
+                                return syntax;
+                            }
+
+                            this.options.say?.(`${path}: asking the llm to review it`);
+
+                            const review = await this.generator.review(instructions, [{ path, content }]);
+
+                            return review.pass ? null : `${path} does not do what its instructions say:\n${review.errors.map((error) => `- ${error}`).join("\n")}`;
+                        },
+                    },
+                });
             }
         }
 
@@ -183,14 +255,13 @@ export class SlytherArtifactBuilder {
     /** Generates the script of the entry, verifying and fixing it until it passes or the attempts run out. Returns how many fixes it took. */
     private async buildScript(entry: SlytherArtifactBuilder["entry"]): Promise<number> {
         const script = entry.script!;
-        const operation = script.kind.operations.find((candidate) => SlytherArtifactBuilder.shortOf(candidate.artifact.name) === script.operation)!;
         const attempts = this.options.attempts ?? SlytherArtifactBuilder.ATTEMPTS;
 
         this.options.say?.(`${entry.path}: asking the llm (attempt 1 of ${attempts})`);
 
         let reply = await this.generator.generate({
-            instructions: this.instructionsOf(script.kind, operation, script.step, script.stepName, entry.path, script.runtime, entry.record),
-            context: this.contextOf(script.kinds, script.kind, operation, script.step),
+            instructions: script.instructions(),
+            context: script.context,
             expected: [entry.path],
             dependencies: this.manifest.dependenciesOf(script.runtime.lang),
         });
@@ -202,13 +273,7 @@ export class SlytherArtifactBuilder {
             await this.install(script.runtime);
             this.options.say?.(`${entry.path}: verifying`);
 
-            const failure = await new SlytherVerifier(this.cwd).verify({
-                operation: script.operation,
-                script: join(this.artifacts, entry.path),
-                runtime: script.runtime,
-                list: script.operation === "list" ? undefined : this.builtScriptOf(entry.kind, "list"),
-                locate: script.operation === "list" ? this.builtScriptOf(entry.kind, "locate") : undefined,
-            });
+            const failure = await script.verify(file.content);
 
             if (failure === null) {
                 return attempt - 1;
@@ -280,8 +345,11 @@ export class SlytherArtifactBuilder {
     }
 
     /** Ignores, inside the artifacts folder, whatever the runtimes in use create. */
-    private async writeIgnore(kinds: SlytherArtifactKind[]): Promise<void> {
-        const langs = new Set(kinds.flatMap((kind) => kind.operations.flatMap((operation) => operation.steps.map((step) => step.lang))));
+    private async writeIgnore(kinds: SlytherArtifactKind[], scripts: SlytherRunScript[]): Promise<void> {
+        const langs = new Set([
+            ...kinds.flatMap((kind) => kind.operations.flatMap((operation) => operation.steps.map((step) => step.lang))),
+            ...scripts.flatMap((script) => script.steps.map((step) => step.lang)),
+        ]);
         const ignored = [...langs]
             .filter((lang): lang is string => lang !== undefined)
             .flatMap((lang) => SlytherRuntime.of(lang, this.artifacts).ignored)
@@ -344,6 +412,42 @@ export class SlytherArtifactBuilder {
             ...(others.length > 0
                 ? ["- The other operations of the kind are scripts it may run instead of reimplementing them:", ...others]
                 : []),
+        ].join("\n");
+    }
+
+    /** What the generator is told to write a step of a script that runs the project. */
+    private runInstructionsOf(
+        script: SlytherRunScript,
+        step: SlytherRunScript["steps"][number],
+        stepName: string,
+        path: string,
+        runtime: SlytherRuntime,
+    ): string {
+        const operations = Object.values(this.manifest.operations)
+            .filter((operation) => operation.deterministic && operation.steps.every((step) => this.manifest.files[step.path]))
+            .map(
+                (operation) =>
+                    `- ${operation.kind} ${operation.name}${SlytherArtifactBuilder.signatureOf(operation.params)}: run ${operation.steps
+                        .map((step) => `\`${step.run!.join(" ")}${operation.params.map((param) => ` <${param.name}>`).join("")}\``)
+                        .join(" then ")}`,
+            );
+        const own = script.steps.length > 1 || step.artifact.content !== script.artifact.content;
+
+        return [
+            `Write the script \`${path}\` in ${runtime.lang}: ${own ? `the step "${stepName}" of ` : ""}the script "${script.name}" that runs the project.`,
+            "",
+            `## Script ${script.name}${SlytherArtifactBuilder.signatureOf(script.params)}`,
+            "",
+            script.artifact.content || "(no further description)",
+            ...(own ? ["", `## Step ${stepName}`, "", step.artifact.content] : []),
+            "",
+            "## Conventions",
+            "",
+            `- The script is run as \`${runtime.run(join(this.artifacts, path)).join(" ")}${script.params.map((param) => ` <${param.name}>`).join("")}\`: it receives the params of the script as positional arguments, in that order${script.params.some((param) => param.optional) ? ", and an optional one may be absent" : ""}.`,
+            "- It runs from the folder the code of the project lives in, so every path it reads or prints is relative to that folder.",
+            "- It runs in the terminal of whoever runs it, with their stdin, stdout and stderr, and may run for as long as the project does, like a server. It exits with 0 on success and with another code when it fails.",
+            `- It is a single, self-contained file${runtime.lang === "ts" ? " run by bun, so it may use the Bun and node APIs" : ""}, importing only the dependencies it declares.`,
+            ...(operations.length > 0 ? ["- The operations of the artifacts of the project are scripts it may run instead of reimplementing them:", ...operations] : []),
         ].join("\n");
     }
 
@@ -458,19 +562,22 @@ export class SlytherArtifactBuilder {
 
     /** A file the build wants on disk, and what it takes to write it. */
     private declare readonly entry: {
-        kind: string;
-        operation: string;
         path: string;
         inputHash: string;
-        record: SlytherArtifactManifest["operations"][string];
+        /** The operation, keyed `kind::name`, or the script, keyed by its name, the file belongs to, and its record. */
+        owner: {
+            operation?: string;
+            script?: string;
+            record: SlytherArtifactManifest["operations"][string] | SlytherArtifactManifest["scripts"][string];
+        };
         /** Set for a deterministic step, which the generator writes once the operations before it are built. */
         script?: {
             runtime: SlytherRuntime;
-            operation: string;
-            kind: SlytherArtifactKind;
-            step: SlytherArtifactKind["operations"][number]["steps"][number];
-            stepName: string;
-            kinds: SlytherArtifactKind[];
+            /** Computed when the script is written, since they name what is built by then. */
+            instructions: () => string;
+            context: { path: string; content: string }[];
+            /** Why the script as written fails, or null when it passes. */
+            verify: (content: string) => Promise<string | null>;
         };
         /** Set for a markdown, which Slyther writes itself. */
         content?: string;

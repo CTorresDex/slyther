@@ -17,6 +17,15 @@ export abstract class SlytherGenerator {
         },
         required: ["files", "dependencies"],
     };
+    /** What a reply to `review` must look like. */
+    private static readonly VERDICT = {
+        type: "object",
+        properties: {
+            pass: { type: "boolean" },
+            errors: { type: "array", items: { type: "string" } },
+        },
+        required: ["pass", "errors"],
+    };
 
     /**
      * Sends the prompt and returns a reply that matches the schema, along with the session a later
@@ -76,6 +85,28 @@ export abstract class SlytherGenerator {
         ].join("\n");
 
         return this.reply(prompt, expected, session);
+    }
+
+    /**
+     * Asks, in a session of its own so whoever wrote the files never approves them, whether they do what the
+     * instructions say, reading them without running them.
+     */
+    async review(instructions: string, files: { path: string; content: string }[]): Promise<{ pass: boolean; errors: string[] }> {
+        const prompt = [
+            "Review whether these files do what the instructions they were written from say. Read them, do not run them.",
+            "Fail them only for what they do wrong or leave out, not for style, and name every error so it can be fixed.",
+            "",
+            "## Instructions",
+            "",
+            instructions,
+            "",
+            "## Files",
+            "",
+            files.map((file) => `### ${file.path}\n\n\`\`\`\n${file.content}\n\`\`\``).join("\n\n"),
+        ].join("\n");
+        const reply = await this.ask<{ pass: boolean; errors: string[] }>(prompt, SlytherGenerator.VERDICT);
+
+        return { pass: reply.result.pass === true, errors: reply.result.errors ?? [] };
     }
 
     private async reply(

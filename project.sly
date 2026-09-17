@@ -36,12 +36,20 @@ method SlytherProject::parse {
 }
 
 method SlytherProject::buildArtifacts {
-    Groups the parsed script into every #{Compiler::SlytherArtifactKind}, prints their warnings, and builds
-    their operations into .slyther/artifacts with #{Build::SlytherArtifactBuilder}, returning what it did to
-    every file: built, rebuilt, kept or removed
+    Groups the parsed script into every #{Compiler::SlytherArtifactKind} and every #{Compiler::SlytherRunScript},
+    prints their warnings, and builds their operations and scripts into .slyther/artifacts with
+    #{Build::SlytherArtifactBuilder}, returning what it did to every file: built, rebuilt, kept or removed
 }
 
 method SlytherProject::run {
+    Runs a #{Compiler::SlytherRunScript} as built, given its name, `default` when none is given, and its args,
+    which must fit its params, otherwise it must throw an error, as must a script that is not built. Its
+    steps run in order from .slyther/src, with the args as positional arguments and the terminal as their
+    stdin, stdout and stderr, and it stops at the first that exits with a code other than 0, returning
+    that code.
+}
+
+method SlytherProject::runOperation {
     Runs an operation of a kind as built, given the kind, the operation and its args, which must fit the
     params of the operation, otherwise it must throw an error, as must an operation that is not built.
 

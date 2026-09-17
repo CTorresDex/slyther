@@ -10,6 +10,7 @@ import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import { SlytherInstanceChecker } from "./SlytherInstanceChecker.class.ts";
 import { SlytherInstanceManifest } from "./SlytherInstanceManifest.class.ts";
 import { SlytherParser } from "./SlytherParser.class.ts";
+import { SlytherRunScript } from "./SlytherRunScript.class.ts";
 import { SlytherScript } from "./SlytherScript.class.ts";
 import { SlytherTracedGenerator } from "./SlytherTracedGenerator.class.ts";
 
@@ -100,7 +101,7 @@ export class SlytherProject {
     }
 
     /**
-     * Builds the operations of every kind into the artifacts folder, where a manifest remembers the
+     * Builds the operations of every kind and the scripts that run the project into the artifacts folder, where a manifest remembers the
      * hash each file was built from and the hash it was written with, so only what is new, changed,
      * missing or edited by hand is built again, and what is gone is removed.
      */
@@ -115,7 +116,10 @@ export class SlytherProject {
 
         await mkdir(this.src, { recursive: true });
 
-        const report = await new SlytherArtifactBuilder(this.src, this.artifactsDir, this.generator, this.progress).build(kinds);
+        const report = await new SlytherArtifactBuilder(this.src, this.artifactsDir, this.generator, this.progress).build(
+            kinds,
+            SlytherRunScript.of(parsed),
+        );
 
         return report.map((entry) => ({ ...entry, path: join(this.src, this.artifactsDir, entry.path) }));
     }
@@ -158,11 +162,50 @@ export class SlytherProject {
     }
 
     /**
+     * Runs a script of the project as built, `default` unless named: its steps run in order from the source
+     * folder in the terminal, with the args as positional arguments, stopping at the first that fails.
+     * Returns the exit code of the last step it ran.
+     */
+    async run(name: string = SlytherParser.RUN_DEFAULT, args: string[] = []): Promise<number> {
+        const manifest = await SlytherArtifactManifest.load(join(this.src, this.artifactsDir, SlytherArtifactManifest.FILE));
+        const record = manifest.scripts[name];
+
+        if (!record) {
+            const built = Object.keys(manifest.scripts);
+
+            throw new Error(
+                `The script "${name}" is not built: run build first, or check the name.${built.length > 0 ? ` The scripts built are ${built.join(", ")}.` : ""}`,
+            );
+        }
+
+        SlytherProject.checkArgs(`The script "${name}"`, record.params, args);
+        await mkdir(this.src, { recursive: true });
+
+        for (const step of record.steps) {
+            const process = Bun.spawn([...step.run, ...args], { cwd: this.src, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+            const code = await process.exited;
+
+            if (code !== 0) {
+                return code;
+            }
+        }
+
+        return 0;
+    }
+
+    /** The names of the scripts that run the project, as built. */
+    async scripts(): Promise<string[]> {
+        const manifest = await SlytherArtifactManifest.load(join(this.src, this.artifactsDir, SlytherArtifactManifest.FILE));
+
+        return Object.keys(manifest.scripts);
+    }
+
+    /**
      * Runs an operation as built: a deterministic one runs its scripts in order from the source folder and
      * stops at the first that fails, one that is not prints the markdown that orchestrates it with the
      * params substituted, or runs it through the generator when one is given to execute it with.
      */
-    async run(
+    async runOperation(
         kind: string,
         operation: string,
         args: string[],
@@ -175,13 +218,7 @@ export class SlytherProject {
             throw new Error(`The operation "${kind}::${operation}" is not built: run build first, or check the name.`);
         }
 
-        const required = record.params.filter((param) => !param.optional).length;
-
-        if (args.length < required || args.length > record.params.length) {
-            throw new Error(
-                `The operation "${kind}::${operation}" takes (${record.params.map((param) => `${param.name}: ${param.type}${param.optional ? "?" : ""}`).join(", ")}), not ${args.length} argument${args.length === 1 ? "" : "s"}.`,
-            );
-        }
+        SlytherProject.checkArgs(`The operation "${kind}::${operation}"`, record.params, args);
 
         await mkdir(this.src, { recursive: true });
 
@@ -235,6 +272,17 @@ export class SlytherProject {
         }
 
         return { project, created };
+    }
+
+    /** Throws when the args do not fit the params: too few for the required ones, or more than there are. */
+    private static checkArgs(what: string, params: { name: string; type: string; optional: boolean }[], args: string[]): void {
+        const required = params.filter((param) => !param.optional).length;
+
+        if (args.length < required || args.length > params.length) {
+            throw new Error(
+                `${what} takes (${params.map((param) => `${param.name}: ${param.type}${param.optional ? "?" : ""}`).join(", ")}), not ${args.length} argument${args.length === 1 ? "" : "s"}.`,
+            );
+        }
     }
 
     private static async exists(path: string): Promise<boolean> {

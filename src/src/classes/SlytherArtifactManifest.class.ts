@@ -23,6 +23,15 @@ export class SlytherArtifactManifest {
                 steps: { name: string; kind: "llm" | "deterministic"; path: string; lang?: string; run?: string[] }[];
             }
         >,
+        /** Every script that runs the project, keyed by its name: what running it needs to know. */
+        readonly scripts: Record<
+            string,
+            {
+                name: string;
+                params: { name: string; type: string; optional: boolean }[];
+                steps: { name: string; path: string; lang: string; run: string[] }[];
+            }
+        >,
         /** Every file built, keyed by its path relative to the artifacts folder: what deciding to rebuild it needs. */
         readonly files: Record<string, { inputHash: string; outputHash: string; dependencies?: Record<string, string> }>,
     ) {}
@@ -32,9 +41,9 @@ export class SlytherArtifactManifest {
         try {
             const parsed = JSON.parse(await readFile(path, "utf-8"));
 
-            return new SlytherArtifactManifest(path, parsed.operations ?? {}, parsed.files ?? {});
+            return new SlytherArtifactManifest(path, parsed.operations ?? {}, parsed.scripts ?? {}, parsed.files ?? {});
         } catch {
-            return new SlytherArtifactManifest(path, {}, {});
+            return new SlytherArtifactManifest(path, {}, {}, {});
         }
     }
 
@@ -51,7 +60,7 @@ export class SlytherArtifactManifest {
         await mkdir(dirname(this.path), { recursive: true });
         await writeFile(
             this.path,
-            `${JSON.stringify({ operations: sorted(this.operations), files: sorted(this.files) }, null, 4)}\n`,
+            `${JSON.stringify({ operations: sorted(this.operations), scripts: sorted(this.scripts), files: sorted(this.files) }, null, 4)}\n`,
         );
     }
 
@@ -60,8 +69,8 @@ export class SlytherArtifactManifest {
         const union: Record<string, string> = {};
 
         for (const [path, file] of Object.entries(this.files)) {
-            const step = Object.values(this.operations)
-                .flatMap((operation) => operation.steps)
+            const step = [...Object.values(this.operations), ...Object.values(this.scripts)]
+                .flatMap((owner): { path: string; lang?: string }[] => owner.steps)
                 .find((step) => step.path === path);
 
             if (step?.lang !== lang) {

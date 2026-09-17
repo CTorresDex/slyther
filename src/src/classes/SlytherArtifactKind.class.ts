@@ -91,6 +91,10 @@ export class SlytherArtifactKind {
         for (const artifact of parsed.artifacts) {
             if (SlytherArtifactKind.STEPS.includes(artifact.artifact)) {
                 const parent = SlytherArtifactKind.parentOf(artifact.name);
+
+                if (artifacts.get(parent)?.artifact === SlytherParser.RUN_KIND) {
+                    continue;
+                }
                 const kind = kinds.get(SlytherArtifactKind.parentOf(parent));
                 const operation = kind?.operations.find((candidate) => candidate.artifact.name === parent);
 
@@ -134,7 +138,11 @@ export class SlytherArtifactKind {
             if (operation.deterministic) {
                 this.checkDeterministic(operation, parsed);
             } else if (operation.steps.length === 0) {
-                throw new Error(`Operation "${operation.artifact.name}" has no steps.`);
+                if (operation.artifact.content.trim().length === 0) {
+                    throw new Error(`Operation "${operation.artifact.name}" has no steps.`);
+                }
+
+                this.addImplicitStep(operation, "llm", parsed);
             } else if (operation.steps.every((step) => step.artifact.artifact === "deterministic")) {
                 this.warnings.push(
                     `Operation "${operation.artifact.name}" has only deterministic steps: qualify it as deterministic.`,
@@ -167,8 +175,7 @@ export class SlytherArtifactKind {
 
     /**
      * A deterministic operation never runs with an llm, so an llm step is an error, and when it has no
-     * steps its content is its only step: a deterministic step named after the operation, whose closure
-     * hash is the operation's, since that already covers the content.
+     * steps its content is its only step, a deterministic one.
      */
     private checkDeterministic(operation: SlytherArtifactKind["operations"][number], parsed: ParsedSlytherScript): void {
         const llm = operation.steps.find((step) => step.artifact.artifact === "llm");
@@ -180,19 +187,24 @@ export class SlytherArtifactKind {
         }
 
         if (operation.steps.length === 0) {
-            const { artifact } = operation;
-            const name = artifact.name.slice(artifact.name.lastIndexOf("::") + 2);
-            const step = new SlytherArtifact(
-                "deterministic",
-                `${artifact.name}::${name}`,
-                [],
-                [],
-                artifact.content,
-                artifact.references,
-            );
-
-            operation.steps.push({ artifact: step, closureHash: operation.closureHash, ...this.langOf(step, parsed) });
+            this.addImplicitStep(operation, "deterministic", parsed);
         }
+    }
+
+    /**
+     * Makes the content of an operation without steps its only step, of the given kind and named after the
+     * operation, whose closure hash is the operation's, since that already covers the content.
+     */
+    private addImplicitStep(
+        operation: SlytherArtifactKind["operations"][number],
+        kind: "llm" | "deterministic",
+        parsed: ParsedSlytherScript,
+    ): void {
+        const { artifact } = operation;
+        const name = artifact.name.slice(artifact.name.lastIndexOf("::") + 2);
+        const step = new SlytherArtifact(kind, `${artifact.name}::${name}`, [], [], artifact.content, artifact.references);
+
+        operation.steps.push({ artifact: step, closureHash: operation.closureHash, ...this.langOf(step, parsed) });
     }
 
     /**
