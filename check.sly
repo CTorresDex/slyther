@@ -6,8 +6,9 @@ class SlytherInstanceManifest {
     What a check remembers about every instance, written as manifest.json in .slyther/instances and keyed
     by `kind:name`, contains for each one:
 
-    - specHash: The hash of the #{Compiler::SlytherArtifact} that declares the instance, so a change to its
-      prose or its args is noticed
+    - specHash: The hash of the #{Compiler::SlytherArtifact} that declares the instance and of every
+      artifact it references that is not an instance: a kind, whose hash is its rules, or a plain
+      artifact. So a change to its prose or its args is noticed, and so is a change to what it leans on
     - contentHash: The hash of the segments locate prints, each as its path and its content, sorted, so
       where a segment is never matters, only what it holds. The content of a folder is its listing, one
       entry per line with a slash after the folders, so it changes with its structure and not with its files
@@ -29,6 +30,12 @@ class SlytherInstanceChecker {
     An instance is every artifact whose kind has operations, identified by its name, and the instances it
     references with \#{} are its dependencies. Instances are checked in an order where every one comes
     after its dependencies, so a dependency is evaluated, and fixed, before what depends on it.
+
+    Whatever the generator is asked about an instance, to create, update or evaluate it, is followed by
+    what the instance references, one level deep, so its prose may lean on it: the rules of a kind, the
+    prose of a plain artifact, and the args, the prose and the signature, when its kind prints one, of an
+    instance. What the referenced ones reference is not included: an instance that needs it references
+    it itself.
 
     It runs in one of two modes: with compile it is a compiler, and brings every instance in line with
     its declaration; without it, nothing touches the code, so it only evaluates and reports.

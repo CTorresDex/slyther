@@ -272,3 +272,51 @@ describe("SlytherInstanceChecker", () => {
         expect(report.map((entry) => entry.errors)).toEqual([["not good"], ["not good"]]);
     });
 });
+
+describe("SlytherInstanceChecker references", () => {
+    const LLM = "operation evaluate (id: string) {\n llm verify { judge it }\n }";
+    const RULE = "\n@artifact rule\nrule R { be nice }";
+
+    test("the llm receives what the instance references: the rules of a kind, the prose of a plain artifact, and an instance with its signature", async () => {
+        await writeFile(join(root, "main.sly"), `${SPEC(LLM)}${RULE}`.replace("k B { uses #{A} }", "k B { uses #{A}, follows #{R}, is a #{k} }"));
+
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await project(generator).check();
+
+        const prompt = generator.prompts[1]!;
+
+        expect(prompt).toContain("### What it references\n\n#### The rules of every k\n\nrules of k\n\n#### k A\n\nthe a\n\nSignature:\n\n- name string\n- greet (): string\n\n#### rule R\n\nbe nice\n\nReply with");
+        expect(generator.prompts[0]).not.toContain("What it references");
+    });
+
+    test("an llm create receives what the instance references", async () => {
+        await rm(join(code(), "B.txt"));
+        await writeFile(
+            join(root, "main.sly"),
+            SPEC().replace("    operation create (id: string, requirements: string): deterministic {\n        deterministic make { writes the requirements }\n    }\n", "    operation create (id: string, requirements: string) {\n        llm write { writes it }\n    }\n"),
+        );
+
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await compile(generator);
+
+        expect(generator.executed[0]).toContain("## What it references\n\n### k A\n\nthe a\n\nSignature:\n\n- name string\n- greet (): string");
+    });
+
+    test("editing what an instance leans on counts as a change of its spec", async () => {
+        const spec = `${SPEC()}${RULE}`.replace("k B { uses #{A} }", "k B { follows #{R} and is a #{k} }");
+
+        await writeFile(join(root, "main.sly"), spec);
+        await compile();
+        await writeFile(join(root, "main.sly"), spec.replace("be nice", "be kind"));
+
+        expect(statuses(await project().check())).toEqual(["k:A kept", "k:B pass (its spec changed)"]);
+        expect(statuses(await compile())).toEqual(["k:A kept", "k:B updated (its spec changed)"]);
+
+        await writeFile(join(root, "main.sly"), spec.replace("be nice", "be kind").replace("rules of k", "the rules of k"));
+
+        expect(statuses(await compile())).toEqual(["k:A kept", "k:B updated (its spec changed)"]);
+        expect(statuses(await compile())).toEqual(["k:A kept", "k:B kept"]);
+    });
+});
