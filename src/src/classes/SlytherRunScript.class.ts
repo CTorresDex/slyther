@@ -1,6 +1,6 @@
 // Imports
 import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
-import { SlytherArtifact } from "./SlytherArtifact.class.ts";
+import type { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import { SlytherParser } from "./SlytherParser.class.ts";
 
 export class SlytherRunScript {
@@ -64,7 +64,7 @@ export class SlytherRunScript {
 
         for (const script of scripts.values()) {
             if (script.steps.length === 0) {
-                const step = new SlytherArtifact("deterministic", `${script.artifact.name}::${script.name}`, [], [], script.artifact.content, script.artifact.references);
+                const step = script.artifact.as("deterministic", `${script.artifact.name}::${script.name}`);
 
                 script.steps.push({ artifact: step, closureHash: script.closureHash, lang: script.langOf(step, parsed) });
             }

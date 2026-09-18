@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
 import { SlytherParser } from "../src/classes/SlytherParser.class.ts";
 import { SlytherScript } from "../src/classes/SlytherScript.class.ts";
 
@@ -38,6 +41,13 @@ describe("SlytherParser qualifiers", () => {
 
         expect(kind.content).toBe("Note foo: bar, baz\nPrints a: b {\n}");
     });
+
+    test("a step block without a name throws, unless escaped as prose", () => {
+        expect(() => parse("@artifact k {\n operation create (id: string) {\n  llm {\n   do it\n  }\n }\n}\n")).toThrow(
+            'The llm block inside operation "k::create" needs a name, as in "llm setup {".',
+        );
+        expect(parse("@artifact k {\n operation create (id: string) {\n  \\llm { do it }\n }\n}\n").artifacts.find((a) => a.name === "k::create")!.content).toContain("llm { do it }");
+    });
 });
 
 describe("SlytherParser extend", () => {
@@ -70,5 +80,118 @@ describe("SlytherParser extend", () => {
         expect(() => parser.extend(parse(script), parent(), "x one { y }")).toThrow('Unknown artifact "x" of "P::one".');
         expect(() => parser.extend(parse(script), parent(), "k one { uses #{nothing} }")).toThrow('Unknown reference "nothing".');
         expect(() => parser.extend(parse(`${script}\nk P::one { by hand }`), parent(), "k one { again }")).toThrow('Duplicate declaration "P::one".');
+    });
+});
+
+describe("SlytherParser from and ref", () => {
+    let dir = "";
+    const at = (source: string, base?: string) => new SlytherParser().parse(new SlytherScript(source, join(dir, "main.sly")), base);
+    const named = (source: string, name: string) => at(source).artifacts.find((artifact) => artifact.name === name)!;
+
+    beforeEach(async () => {
+        dir = await mkdtemp(join(tmpdir(), "slyther-parser-"));
+        await mkdir(join(dir, "docs"));
+        await writeFile(join(dir, "docs", "pricing.md"), "\n\n# Pricing\n\nUses #{Nothing} as `code`.\n\n");
+    });
+
+    afterEach(async () => {
+        await rm(dir, { recursive: true, force: true });
+    });
+
+    test("from embeds the file as the content, without the blank lines around it, and without reading references in it", () => {
+        const artifact = named('@artifact research\nresearch Pricing from "./docs/pricing.md"', "Pricing");
+
+        expect(artifact.content).toBe("# Pricing\n\nUses #{Nothing} as `code`.");
+        expect(artifact.prose).toBe(artifact.content);
+        expect(artifact.references).toEqual([]);
+        expect(artifact.source).toMatchObject({ mode: "from", path: join("docs", "pricing.md") });
+    });
+
+    test("ref leaves the content empty and points at the file, relative to the base", () => {
+        const artifact = at('@artifact source\nsource Pricing ref "./docs/pricing.md"', join(dir, ".slyther", "src")).artifacts.find((artifact) => artifact.name === "Pricing")!;
+
+        expect(artifact.content).toBe("");
+        expect(artifact.source).toMatchObject({ mode: "ref", path: join("..", "..", "docs", "pricing.md") });
+        expect(artifact.prose).toBe(`Read \`${join("..", "..", "docs", "pricing.md")}\`: it holds the prose of source Pricing.`);
+        expect(artifact.textIn(join(dir, ".slyther", "src"))).toBe("# Pricing\n\nUses #{Nothing} as `code`.");
+    });
+
+    test("a change to the file changes the hash, for from and for ref", async () => {
+        const script = '@artifact d\nd A from "./docs/pricing.md"\nd B ref "./docs/pricing.md"';
+        const before = at(script).artifacts;
+
+        await writeFile(join(dir, "docs", "pricing.md"), "changed");
+
+        const after = at(script).artifacts;
+
+        expect(after.find((artifact) => artifact.name === "A")!.hash).not.toBe(before.find((artifact) => artifact.name === "A")!.hash);
+        expect(after.find((artifact) => artifact.name === "B")!.hash).not.toBe(before.find((artifact) => artifact.name === "B")!.hash);
+    });
+
+    test("works for a kind, a nested block and a script, and resolves the path relative to the script that imports it", async () => {
+        await mkdir(join(dir, "sub"));
+        await writeFile(join(dir, "sub", "rules.md"), "the rules");
+        await writeFile(join(dir, "sub", "kinds.sly"), '@artifact k ref "./rules.md"');
+
+        const parsed = at('@import "./sub/kinds.sly"\n@artifact j {\n operation create (id: string) {\n  llm fill from "./docs/pricing.md"\n }\n}\n@run dev from "./docs/pricing.md"');
+        const byName = (name: string) => parsed.artifacts.find((artifact) => artifact.name === name)!;
+
+        expect(byName("k").source).toMatchObject({ mode: "ref", path: join("sub", "rules.md") });
+        expect(byName("j::create::fill").content).toBe("# Pricing\n\nUses #{Nothing} as `code`.");
+        expect(byName("j::create").content).toBe("");
+        expect(byName("run::dev").source?.mode).toBe("from");
+    });
+
+    test("throws on a missing file and on a file with a body as well", () => {
+        expect(() => at('@artifact d\nd A from "./docs/none.md"')).toThrow(`Cannot read "./docs/none.md", the prose of "A", from "${join(dir, "main.sly")}".`);
+        expect(() => at('@artifact d\nd A ref "./docs/pricing.md" {\n x\n}')).toThrow('"A" takes its prose from "./docs/pricing.md", so it cannot have a body in braces as well.');
+    });
+
+    test("ref points at a folder, with a trailing separator, and reads every file it holds", async () => {
+        await writeFile(join(dir, "docs", "terms.md"), "the terms");
+
+        const artifact = at('@artifact source\nsource Docs ref "./docs"').artifacts.find((artifact) => artifact.name === "Docs")!;
+
+        expect(artifact.content).toBe("");
+        expect(artifact.source).toMatchObject({ mode: "ref", path: `docs${sep}` });
+        expect(artifact.prose).toBe(`Read the files in \`docs${sep}\`: they hold the prose of source Docs.`);
+        expect(artifact.textIn(dir)).toBe("=== pricing.md ===\n\n# Pricing\n\nUses #{Nothing} as `code`.\n\n=== terms.md ===\n\nthe terms");
+    });
+
+    test("a folder changes its hash when any file in it is added, edited or removed, and ignores what a .gitignore does", async () => {
+        const script = '@artifact d\nd A ref "./docs"';
+        const hash = () => at(script).artifacts.find((artifact) => artifact.name === "A")!.hash;
+        const before = hash();
+
+        await writeFile(join(dir, "docs", "terms.md"), "the terms");
+        const added = hash();
+        expect(added).not.toBe(before);
+
+        await writeFile(join(dir, "docs", "terms.md"), "changed");
+        expect(hash()).not.toBe(added);
+
+        await rm(join(dir, "docs", "terms.md"));
+        expect(hash()).toBe(before);
+
+        await writeFile(join(dir, "docs", ".gitignore"), "*.log\n");
+        const ignoring = hash();
+
+        await writeFile(join(dir, "docs", "noise.log"), "noise");
+        expect(hash()).toBe(ignoring);
+    });
+
+    test("from cannot point at a folder", () => {
+        expect(() => at('@artifact d\nd A from "./docs"')).toThrow(
+            '"./docs", the prose of "A", is a folder, which holds no text to embed with from. Point at it with ref instead.',
+        );
+    });
+
+    test("what an expand emits cannot take its prose from a file", () => {
+        const parsed = at("@artifact k\nk P { the p }");
+        const parent = parsed.artifacts.find((artifact) => artifact.name === "P")!;
+
+        expect(() => new SlytherParser().extend(parsed, parent, 'k one from "./docs/pricing.md"')).toThrow(
+            '"P::one" takes its prose from "./docs/pricing.md", but what an expand emits cannot take its prose from a file.',
+        );
     });
 });

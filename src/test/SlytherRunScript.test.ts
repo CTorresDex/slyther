@@ -73,7 +73,7 @@ describe("SlytherParser @run", () => {
     });
 
     test("throws without braces, with an llm step, on a repeated name and on @artifact run", () => {
-        expect(() => parse("@run dev")).toThrow('The script "dev" declared with @run must have a body in braces.');
+        expect(() => parse("@run dev")).toThrow('The script "dev" declared with @run must have a body in braces, or take it from a file with from or ref.');
         expect(() => parse('@lang "sh"\n@run {\n    llm think { x }\n}')).toThrow('"llm" cannot be declared inside run "run::default"');
         expect(() => parse("@run a { x }\n@run a { y }")).toThrow('Duplicate declaration "run::a".');
         expect(() => parse("@artifact run")).toThrow('"run" is the kind of the scripts declared with @run');

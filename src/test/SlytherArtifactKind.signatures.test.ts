@@ -30,13 +30,25 @@ describe("SlytherArtifactKind params", () => {
         );
     });
 
-    test("throws when locate does not have the params (id: string)", () => {
+    test("throws when locate does not take the id first", () => {
         expect(() => kinds('@lang "ts"\n@artifact k {\n operation locate: deterministic { x }\n}')).toThrow(
-            'Operation "k::locate" must have the params (id: string).',
+            'Operation "k::locate" must take (id: string) as its first param.',
         );
         expect(() => kinds('@lang "ts"\n@artifact k {\n operation locate (id: string?): deterministic { x }\n}')).toThrow(
-            'Operation "k::locate" must have the params (id: string).',
+            'Operation "k::locate" must take (id: string) as its first param.',
         );
+        expect(() => kinds('@lang "ts"\n@artifact k {\n operation locate (path: string, id: string): deterministic { x }\n}')).toThrow(
+            'Operation "k::locate" must take (id: string) as its first param.',
+        );
+    });
+
+    test("locate may take more params than the id", () => {
+        const [kind] = kinds('@lang "ts"\n@artifact k {\n operation locate (id: string, path: string): deterministic { prints the path }\n}');
+
+        expect(kind!.operation("locate")!.params).toEqual([
+            { name: "id", type: "string", optional: false },
+            { name: "path", type: "string", optional: false },
+        ]);
     });
 
     test("throws when a value that is not a type is optional", () => {

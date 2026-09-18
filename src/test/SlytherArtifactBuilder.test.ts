@@ -219,6 +219,40 @@ describe("SlytherArtifactBuilder", () => {
     });
 });
 
+describe("SlytherArtifactBuilder ref", () => {
+    test("reads a ref into what it asks the generator, and only points at it in the markdown of an llm step", async () => {
+        await writeFile(join(root, "rules.md"), "the rules in a file");
+        await writeFile(join(root, "scaffold.md"), "the scaffold in a file");
+
+        const prompts: string[] = [];
+        const generator = new (class extends FakeGenerator {
+            override async ask<T>(prompt: string, schema: object, session?: string) {
+                prompts.push(prompt);
+
+                return super.ask<T>(prompt, schema, session);
+            }
+        })(SCRIPTS);
+        const spec = `@lang "sh"
+@artifact k ref "./rules.md"
+operation k::locate (id: string): deterministic { prints src/{id}.txt }
+operation k::create (id: string, content: string) {
+    deterministic scaffold ref "./scaffold.md"
+    llm fill { fills the file }
+}
+operation k::evaluate (id: string) { checks the file }`;
+        const kinds = SlytherArtifactKind.of(new SlytherParser().parse(new SlytherScript(spec, join(root, "main.sly")), root));
+
+        await new SlytherArtifactBuilder(root, ARTIFACTS, generator).build(kinds);
+
+        const scaffold = prompts.find((prompt) => prompt.includes("`k/create/scaffold.sh`"))!;
+
+        expect(scaffold).toContain("the rules in a file");
+        expect(scaffold).toContain("the scaffold in a file");
+        expect(await read("k/create/fill.md")).toContain("Read `rules.md`: it holds the prose of artifact k.");
+        expect(await read("k/create/fill.md")).not.toContain("the rules in a file");
+    });
+});
+
 describe("SlytherArtifactBuilder expand", () => {
     const COMPOSITE = `${SPEC()}
 @artifact c {

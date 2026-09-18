@@ -98,6 +98,7 @@ export class SlytherInstanceChecker {
 
         for (const [key, instance] of coded) {
             this.options.say?.(`${key}: locating`);
+            report.push(...(await this.moved(key, instance)));
             states.set(key, await this.stateOf(key, instance));
         }
 
@@ -166,6 +167,7 @@ export class SlytherInstanceChecker {
             this.manifest.instances[key] = {
                 specHash: this.options.compile || !this.manifest.instances[key] ? this.specHashOf(instance) : this.manifest.instances[key].specHash,
                 ...parent,
+                ...(state.locatedWith ? { locatedWith: state.locatedWith } : {}),
                 contentHash: state.contentHash ?? "",
                 ...(state.signature ? { signature: state.signature } : {}),
                 dependencies: Object.fromEntries(
@@ -291,7 +293,9 @@ export class SlytherInstanceChecker {
     private async forget(key: string): Promise<SlytherInstanceChecker["entry"][]> {
         const record = this.manifest.instances[key]!;
         const boundary = key.indexOf(":");
-        const located = record.parent ? await this.runOperation(key.slice(0, boundary), "locate", [key.slice(boundary + 1)]) : undefined;
+        const located = record.parent
+            ? await this.runOperation(key.slice(0, boundary), "locate", record.locatedWith ?? [key.slice(boundary + 1)])
+            : undefined;
 
         if (located?.code !== 0) {
             delete this.manifest.instances[key];
@@ -303,6 +307,35 @@ export class SlytherInstanceChecker {
         record.errors = [];
 
         return [{ key, status: "orphan", reason: `no longer emitted by ${record.parent}`, errors: [], parent: record.parent }];
+    }
+
+    /**
+     * The code an instance left behind when its args moved it: locate ran with other args when it was
+     * checked, so it is run with them once more, and whatever it still finds is reported as an orphan
+     * and left alone, since nothing removes code. It is reported once, the check that notices the move.
+     */
+    private async moved(key: string, instance: { kind: string; name: string; artifact: SlytherArtifact }): Promise<SlytherInstanceChecker["entry"][]> {
+        const before = this.manifest.instances[key]?.locatedWith;
+
+        if (!before) {
+            return [];
+        }
+
+        const now = this.argsFor(instance.kind, "locate", instance, key);
+
+        if (before.join("\n") === now.join("\n")) {
+            return [];
+        }
+
+        const located = await this.runOperation(instance.kind, "locate", before);
+
+        if (!located || located.code !== 0) {
+            return [];
+        }
+
+        const segments = SlytherInstanceChecker.linesOf(located.stdout);
+
+        return [{ key, status: "orphan", reason: `moved, so its code is left at ${segments.join(", ")}`, errors: [] }];
     }
 
     /** The report with every emitted instance right after its parent, its orphans after them, and the orphans of a parent that is gone last. */
@@ -344,7 +377,7 @@ export class SlytherInstanceChecker {
             }
 
             if (artifact.artifact === "artifact") {
-                sections.push(`${heading} The rules of every ${artifact.name}`, "", artifact.content || "(no rules)", "");
+                sections.push(`${heading} The rules of every ${artifact.name}`, "", artifact.prose || "(no rules)", "");
                 continue;
             }
 
@@ -450,15 +483,23 @@ export class SlytherInstanceChecker {
         return instances;
     }
 
-    /** Where the instance is and what it looks like now: its segments, their hash, its signature and what it uses. */
+    /** Where the instance is and what it looks like now: what located it, its segments, their hash, its signature and what it uses. */
     private async stateOf(
         key: string,
-        instance: { kind: string; name: string },
-    ): Promise<{ segments?: { path: string; content: string }[]; contentHash?: string; signature?: string[]; uses?: Record<string, string[]> }> {
-        const located = await this.runOperation(instance.kind, "locate", [instance.name]);
+        instance: { kind: string; name: string; artifact: SlytherArtifact },
+    ): Promise<{
+        locatedWith?: string[];
+        segments?: { path: string; content: string }[];
+        contentHash?: string;
+        signature?: string[];
+        uses?: Record<string, string[]>;
+    }> {
+        const args = this.argsFor(instance.kind, "locate", instance, key);
+        const locatedWith = args.length > 1 ? { locatedWith: args } : {};
+        const located = await this.runOperation(instance.kind, "locate", args);
 
         if (!located || located.code !== 0) {
-            return {};
+            return { ...locatedWith };
         }
 
         const segments: { path: string; content: string }[] = [];
@@ -471,10 +512,11 @@ export class SlytherInstanceChecker {
 
         segments.sort((a, b) => a.path.localeCompare(b.path) || a.content.localeCompare(b.content));
 
-        const signature = await this.runOperation(instance.kind, "signature", [instance.name]);
-        const uses = await this.runOperation(instance.kind, "uses", [instance.name]);
+        const signature = await this.runOperation(instance.kind, "signature", this.argsFor(instance.kind, "signature", instance, key));
+        const uses = await this.runOperation(instance.kind, "uses", this.argsFor(instance.kind, "uses", instance, key));
 
         return {
+            ...locatedWith,
             segments,
             contentHash: SlytherInstanceChecker.hash(...segments.map((segment) => `${segment.path}\n${segment.content}`)),
             signature: signature?.code === 0 ? SlytherInstanceChecker.linesOf(signature.stdout) : undefined,
@@ -516,7 +558,7 @@ export class SlytherInstanceChecker {
     /** Locates the instance again after an operation changed it, and remembers what it found for the instances that reference it. */
     private async relocate(
         key: string,
-        instance: { kind: string; name: string },
+        instance: { kind: string; name: string; artifact: SlytherArtifact },
         states: Map<string, Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>>,
     ): Promise<Awaited<ReturnType<SlytherInstanceChecker["stateOf"]>>> {
         const state = await this.stateOf(key, instance);
@@ -595,7 +637,7 @@ export class SlytherInstanceChecker {
             }
         }
 
-        return record.result === "fail" && this.options.compile ? "it failed last time" : null;
+        return record.result === "fail" && this.options.compile ? "it failed its last evaluation" : null;
     }
 
     /**
@@ -617,7 +659,7 @@ export class SlytherInstanceChecker {
             if (step.run) {
                 this.options.say?.(`${key}: evaluating with ${step.run.join(" ")}`);
 
-                const result = await ProcessUtils.run([...step.run, instance.name], { cwd: this.cwd });
+                const result = await ProcessUtils.run([...step.run, ...SlytherInstanceChecker.argsOf(operation, instance, key, [])], { cwd: this.cwd });
 
                 if (result.code !== 0) {
                     return { pass: false, errors: SlytherInstanceChecker.linesOf(`${result.stdout}\n${result.stderr}`) };
@@ -713,7 +755,7 @@ export class SlytherInstanceChecker {
         return operation.params.map((param) => {
             const arg = instance.artifact.args.find((candidate) => candidate.name === param.name);
             const value =
-                param.name === "id" ? instance.name : param.name === "errors" ? errors.join("\n") : arg !== undefined ? String(arg.value) : instance.artifact.content;
+                param.name === "id" ? instance.name : param.name === "errors" ? errors.join("\n") : arg !== undefined ? String(arg.value) : instance.artifact.prose;
 
             if (value === "" && !param.optional && param.name !== "errors") {
                 throw new Error(`${key} gives nothing for the param "${param.name}" of ${operation.kind}::${operation.name}: declare it as an arg, or write it as the prose of the instance.`);
@@ -723,11 +765,21 @@ export class SlytherInstanceChecker {
         });
     }
 
+    /**
+     * The args the read-only operation of the kind runs with for the instance, filled as create fills
+     * them, so a kind whose locate needs more than the id gets it from the args of the instance.
+     */
+    private argsFor(kind: string, operation: string, instance: { name: string; artifact: SlytherArtifact }, key: string): string[] {
+        const record = this.built.operations[`${kind}::${operation}`];
+
+        return record ? SlytherInstanceChecker.argsOf(record, instance, key, []) : [instance.name];
+    }
+
     /** The instance as declared, for the generator to read: its args, one per line, and its prose. */
     private static specOf(artifact: SlytherArtifact): string {
         const args = artifact.args.map((arg) => `- ${arg.name}: ${String(arg.value)}`);
 
-        return [...args, ...(args.length > 0 && artifact.content ? [""] : []), artifact.content || "(no further description)"].join("\n");
+        return [...args, ...(args.length > 0 && artifact.prose ? [""] : []), artifact.prose || "(no further description)"].join("\n");
     }
 
     /** The heading and the sections under it, or nothing when there are no sections. */

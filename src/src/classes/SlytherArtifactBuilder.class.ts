@@ -167,8 +167,9 @@ export class SlytherArtifactBuilder {
                                           operation: name,
                                           script: join(this.artifacts, path),
                                           runtime,
+                                          params: operation.params.length,
                                           list: name === "list" ? undefined : this.builtScriptOf(kind.name, "list"),
-                                          locate: name === "list" ? this.builtScriptOf(kind.name, "locate") : undefined,
+                                          locate: name === "list" && SlytherArtifactBuilder.locatesById(kind) ? this.builtScriptOf(kind.name, "locate") : undefined,
                                           expand:
                                               name === SlytherArtifactKind.EXPAND
                                                   ? {
@@ -224,7 +225,7 @@ export class SlytherArtifactBuilder {
                     script: {
                         runtime,
                         instructions: () => (instructions = this.runInstructionsOf(script, step, stepName, path, runtime)),
-                        context: script.references.map((artifact) => ({ path: `${artifact.artifact}:${artifact.name}`, content: artifact.content })),
+                        context: script.references.map((artifact) => ({ path: `${artifact.artifact}:${artifact.name}`, content: artifact.textIn(this.cwd) })),
                         verify: async (content) => {
                             const syntax = await new SlytherVerifier(this.cwd).verify({ operation: SlytherArtifactBuilder.RUN, script: join(this.artifacts, path), runtime });
 
@@ -309,6 +310,11 @@ export class SlytherArtifactBuilder {
     }
 
     /** The single script of a deterministic operation of the kind, when it is built and on disk. */
+    /** Whether the id alone locates an instance of the kind, so the ids list prints can be checked against it. */
+    private static locatesById(kind: SlytherArtifactKind): boolean {
+        return kind.operation("locate")?.params.length === 1;
+    }
+
     private builtScriptOf(kind: string, operation: string): { script: string; runtime: SlytherRuntime } | undefined {
         const step = this.manifest.operations[`${kind}::${operation}`]?.steps[0];
 
@@ -434,15 +440,15 @@ export class SlytherArtifactBuilder {
             "",
             `## Rules of every ${kind.name}`,
             "",
-            kind.rules,
+            kind.artifact.textIn(this.cwd),
             "",
             `## Operation ${record.name}${SlytherArtifactBuilder.signatureOf(operation.params)}`,
             "",
-            operation.artifact.content || "(no further description)",
+            operation.artifact.textIn(this.cwd) || "(no further description)",
             "",
             `## Step ${stepName}`,
             "",
-            step.artifact.content,
+            step.artifact.textIn(this.cwd),
             "",
             "## Conventions",
             "",
@@ -453,12 +459,12 @@ export class SlytherArtifactBuilder {
             ...(others.length > 0
                 ? ["- The other operations of the kind are scripts it may run instead of reimplementing them:", ...others]
                 : []),
-            ...(record.name === SlytherArtifactKind.EXPAND ? ["", ...SlytherArtifactBuilder.emitsOf(kinds, kind)] : []),
+            ...(record.name === SlytherArtifactKind.EXPAND ? ["", ...SlytherArtifactBuilder.emitsOf(kinds, kind, this.cwd)] : []),
         ].join("\n");
     }
 
     /** What the script of an expand is told about what it prints: the form of a declaration and the kinds it may emit, with what their create needs. */
-    private static emitsOf(kinds: SlytherArtifactKind[], kind: SlytherArtifactKind): string[] {
+    private static emitsOf(kinds: SlytherArtifactKind[], kind: SlytherArtifactKind, cwd: string): string[] {
         const emitted = kind.emits.map((name) => kinds.find((candidate) => candidate.name === name)!);
 
         return [
@@ -475,7 +481,7 @@ export class SlytherArtifactBuilder {
                     "",
                     `### ${emitted.name}${needed.length > 0 ? `, whose create needs ${needed.map((param) => `${param.name} (${param.type}${param.optional ? ", optional" : ""})`).join(", ")}` : ""}`,
                     "",
-                    emitted.rules || "(no rules)",
+                    emitted.artifact.textIn(cwd) || "(no rules)",
                 ];
             }),
         ];
@@ -497,15 +503,15 @@ export class SlytherArtifactBuilder {
                         .map((step) => `\`${step.run!.join(" ")}${operation.params.map((param) => ` <${param.name}>`).join("")}\``)
                         .join(" then ")}`,
             );
-        const own = script.steps.length > 1 || step.artifact.content !== script.artifact.content;
+        const own = script.steps.length > 1 || step.artifact.prose !== script.artifact.prose;
 
         return [
             `Write the script \`${path}\` in ${runtime.lang}: ${own ? `the step "${stepName}" of ` : ""}the script "${script.name}" that runs the project.`,
             "",
             `## Script ${script.name}${SlytherArtifactBuilder.signatureOf(script.params)}`,
             "",
-            script.artifact.content || "(no further description)",
-            ...(own ? ["", `## Step ${stepName}`, "", step.artifact.content] : []),
+            script.artifact.textIn(this.cwd) || "(no further description)",
+            ...(own ? ["", `## Step ${stepName}`, "", step.artifact.textIn(this.cwd)] : []),
             "",
             "## Conventions",
             "",
@@ -532,7 +538,7 @@ export class SlytherArtifactBuilder {
             const referenced = kinds.find((candidate) => candidate.name === name)?.artifact;
 
             if (referenced && referenced.name !== kind.name) {
-                context.push({ path: reference, content: referenced.content });
+                context.push({ path: reference, content: referenced.textIn(this.cwd) });
             }
         }
 
@@ -556,7 +562,7 @@ export class SlytherArtifactBuilder {
             "",
             "## Step",
             "",
-            step.artifact.content,
+            step.artifact.prose,
             "",
         ].join("\n");
     }
@@ -578,7 +584,7 @@ export class SlytherArtifactBuilder {
             "",
             `Params: ${SlytherArtifactBuilder.paramsOf(record.params)}`,
             "",
-            ...(operation.artifact.content ? [operation.artifact.content, ""] : []),
+            ...(operation.artifact.prose ? [operation.artifact.prose, ""] : []),
             `## Rules of every ${kind.name}`,
             "",
             kind.rules,

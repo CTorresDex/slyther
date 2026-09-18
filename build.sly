@@ -78,9 +78,10 @@ class SlytherVerifier {
 
     Every script is checked for syntax with the command of its #{SlytherRuntime}. The scripts of the
     read-only operations, locate, list, signature and uses, are also run, since running them changes
-    nothing: list with no args must exit 0, and locate must find the first id it prints, so list prints
-    the ids locate takes; the others must exit 0 or 1 given the first id list prints, or a sample id when
-    it prints none, and print nothing when they exit 1. When signature exits 0, every line it prints must
+    nothing: list with no args must exit 0, and, when the id alone locates an artifact of the kind, locate
+    must find the first id list prints, so list prints the ids locate takes; the others must exit 0 or 1
+    given the first id list prints, or a sample id when it prints none, with a sample value for every
+    param they take after the id, and print nothing when they exit 1. When signature exits 0, every line it prints must
     have the `key shape` form, and when uses exits 0, every line must have the `kind:id key` form.
 
     The expand of a composite kind is also run, with a sample value for each of its params: it must exit 0
@@ -132,7 +133,9 @@ class SlytherArtifactBuilder {
     #{SlytherGenerationTask}: its instructions hold the rules of the kind, the operation and its params,
     the step, the conventions every script follows and the commands that run the other deterministic
     operations of the kind already built, and its context holds the prose of every artifact the kind, the
-    operation or the step reference. Once written, the dependencies the reply declares are recorded, the
+    operation or the step reference. The generator reads no files while it writes a script, so wherever
+    these hold the prose of a `ref`, they hold the text of its file instead, while the markdown of an llm
+    step and operation.md, which are followed with tools, only point at it. Once written, the dependencies the reply declares are recorded, the
     dependencies file of the lang is rewritten when their union changed and installed, and the script is
     checked with #{SlytherVerifier}: when it fails, the failure is sent back with `fix`, up to three
     attempts, after which the build throws and the file is not recorded, so the next build tries again.

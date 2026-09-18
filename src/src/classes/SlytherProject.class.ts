@@ -91,7 +91,7 @@ export class SlytherProject {
 
     /** Parses the entry point and writes its JSON representation to the build folder as parser.json. */
     async parse(): Promise<{ parsed: ParsedSlytherScript; path: string }> {
-        const parsed = new SlytherParser().parse(await SlytherScript.of(this.main));
+        const parsed = new SlytherParser().parse(await SlytherScript.of(this.main), this.src);
         const path = join(this.buildDir, "parser.json");
 
         await mkdir(this.buildDir, { recursive: true });

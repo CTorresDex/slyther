@@ -200,7 +200,7 @@ describe("SlytherInstanceChecker", () => {
 
         const fixed = await compile();
 
-        expect(statuses(fixed)).toEqual(["k:A kept", "k:B fixed (it failed last time)"]);
+        expect(statuses(fixed)).toEqual(["k:A kept", "k:B fixed (it failed its last evaluation)"]);
         expect(await read("B.txt")).toBe("GOOD\n");
         expect(statuses(await project().check())).toEqual(["k:A kept", "k:B kept"]);
     });
@@ -408,5 +408,55 @@ c P (parts: "${parts}") { ${prose} }`;
         expect(statuses(report)).toEqual(["c:P fail (what it emitted is not valid)", "k:A pass (never evaluated)", "k:B pass (never evaluated)"]);
         expect(report[0]!.errors).toEqual(['c:P emitted the plain "P::one", but its expand does not reference plain: it may only emit k.']);
         expect(await stat(join(code(), "P::one.txt")).then(() => true, () => false)).toBe(false);
+    });
+});
+
+describe("SlytherInstanceChecker locate with params", () => {
+    /** A kind whose id does not say where its instances are: the path is an arg of the instance. */
+    const AT = (path = "src/docs/a.md") => `${SPEC()}
+@artifact p {
+    rules of p
+    operation locate (id: string, path: string): deterministic { prints the path }
+    operation evaluate (id: string, path: string): deterministic { accepts anything }
+    operation create (id: string, path: string, requirements: string): deterministic {
+        deterministic write { writes the requirements at the path }
+    }
+}
+p Doc (path: "${path}") { a doc }`;
+    const AT_SCRIPTS = {
+        ...SCRIPTS,
+        "p/locate/locate.sh": '[ -f "$2" ] || exit 1; echo "$2"',
+        "p/list/list.sh": "true",
+        "p/evaluate/evaluate.sh": "exit 0",
+        "p/create/write.sh": 'mkdir -p "$(dirname "$2")"; printf "%s\\n" "$3" > "$2"',
+    };
+    const at = () => new FakeGenerator(AT_SCRIPTS);
+
+    test("locate is run with the args of the instance, and what found it is recorded", async () => {
+        await writeFile(join(root, "main.sly"), AT());
+
+        expect(statuses(await compile(at()))).toContain("p:Doc created (missing)");
+        expect(await readFile(join(code(), "docs/a.md"), "utf-8")).toBe("a doc\n");
+        expect((await manifest())["p:Doc"].locatedWith).toEqual(["Doc", "src/docs/a.md"]);
+        expect(statuses(await compile(at()))).toContain("p:Doc kept");
+    });
+
+    test("the code an instance moves away from is reported as an orphan, once, and left alone", async () => {
+        await writeFile(join(root, "main.sly"), AT());
+        await compile(at());
+        await writeFile(join(root, "main.sly"), AT("src/docs/b.md"));
+
+        const report = await compile(at());
+
+        expect(statuses(report)).toContain("p:Doc orphan (moved, so its code is left at src/docs/a.md)");
+        expect(statuses(report)).toContain("p:Doc created (missing)");
+        expect(await readFile(join(code(), "docs/a.md"), "utf-8")).toBe("a doc\n");
+        expect(await readFile(join(code(), "docs/b.md"), "utf-8")).toBe("a doc\n");
+        expect((await manifest())["p:Doc"].locatedWith).toEqual(["Doc", "src/docs/b.md"]);
+
+        const again = await compile(at());
+
+        expect(statuses(again)).toContain("p:Doc kept");
+        expect(statuses(again).some((status) => status.includes("orphan"))).toBe(false);
     });
 });

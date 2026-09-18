@@ -21,13 +21,16 @@ export class SlytherVerifier {
      * Checks the script of a deterministic step and returns why it fails, or null when it passes. The
      * script is checked for syntax, and the scripts of the read-only operations are also run, with the
      * script of list when the step is not list itself, to get a real id to run them with, and with the
-     * script of locate when the step is list, since locate must find every id list prints. The script
+     * script of locate when the step is list, since locate must find every id list prints. A read-only
+     * operation that takes params after the id is run with a sample value for each of them. The script
      * of an expand is run with the sample args given: it must exit 0 and print what validate accepts.
      */
     async verify(step: {
         operation: string;
         script: string;
         runtime: SlytherRuntime;
+        /** How many params the operation takes, so the ones after the id are run with a sample value. */
+        params?: number;
         list?: { script: string; runtime: SlytherRuntime };
         locate?: { script: string; runtime: SlytherRuntime };
         expand?: { args: string[]; validate: (output: string) => string | null };
@@ -75,10 +78,11 @@ export class SlytherVerifier {
         }
 
         const id = (await this.firstId(step.list)) ?? SlytherVerifier.SAMPLE;
-        const run = await ProcessUtils.run([...step.runtime.run(step.script), id], { cwd: this.cwd });
+        const args = [id, ...SlytherVerifier.samples(step.params)];
+        const run = await ProcessUtils.run([...step.runtime.run(step.script), ...args], { cwd: this.cwd });
 
         if (run.code !== 0 && run.code !== 1) {
-            return `${step.script} must exit 0 or 1 given "${id}" but exited ${run.code}:\n${run.stderr}`;
+            return `${step.script} must exit 0 or 1 given ${args.map((arg) => `"${arg}"`).join(" ")} but exited ${run.code}:\n${run.stderr}`;
         }
 
         if (run.code === 1 && run.stdout.trim()) {
@@ -94,6 +98,11 @@ export class SlytherVerifier {
         }
 
         return null;
+    }
+
+    /** A sample value for every param of the operation after the id. */
+    private static samples(params: number | undefined): string[] {
+        return Array.from({ length: Math.max((params ?? 1) - 1, 0) }, () => SlytherVerifier.SAMPLE);
     }
 
     private async firstId(list: { script: string; runtime: SlytherRuntime } | undefined): Promise<string | undefined> {

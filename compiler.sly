@@ -17,9 +17,33 @@ class SlytherArtifact {
       and anything else followed by `?` must throw an error
     - qualifiers: The qualifiers declared after a colon that follows the name and the args, as bare words separated
       by commas, in the order written. Writing the same qualifier twice must throw an error
-    - content: The prose written inside the artifact
-    - references: `kind:name` of the references found in the artifact prose and of the types of its args, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error
-    - hash: The hash of the artifact, the name, the args, the qualifiers and the content
+    - content: The prose written inside the artifact, or the text of the file it is taken `from`, and empty when it is a `ref`
+    - source: When the prose is taken from a file instead of a body, whether `from` or `ref`, the path of the file
+      relative to the folder everything runs from, and the hash of what the file held. A `ref` may name a folder
+      instead, kept with a trailing separator and hashed by #{SlytherFolderSource}
+    - prose: The prose as whoever runs from that folder reads it: the content, or, for a ref, a line telling to read
+      its file, or the files its folder holds
+    - references: `kind:name` of the references found in the artifact prose and of the types of its args, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error.
+      The text of a file is opaque: nothing in it is read as a reference
+    - hash: The hash of the artifact, the name, the args, the qualifiers, the content and, when there is one, the source,
+      so a change to the file of a `from` or a `ref` changes it
+}
+
+class SlytherFolderSource {
+    Reads a folder the way #{SlytherArtifact} reads a file, so a folder can be the source of a `ref`.
+
+    The files of a folder are every file it holds, each as a path relative to it and what it holds, sorted
+    by path. It never walks into node_modules or .git, it obeys every `.gitignore` in the tree, each one
+    over the folder that holds it and the ones below, with the last rule that matches deciding, and it
+    leaves binary files out: what they hold is not prose, and their bytes would only make the folder look
+    changed.
+
+    Its hash covers the path of every file and the hash of what it holds, so adding, removing or renaming a
+    file changes it as much as editing one does.
+
+    Its text is everything the folder holds as one text, each file under a heading naming it, for whoever
+    cannot read files. A folder that holds more text than the limit must throw an error rather than be cut
+    short, since prose that stops halfway is worse than prose that is missing.
 }
 
 class SlytherClosureHasher {
@@ -73,7 +97,7 @@ class SlytherArtifactKind {
     operation, when an operation that is not deterministic has neither steps nor content, or when a kind has a create
     or update operation but no evaluate operation to verify them with, or when a kind that is not
     composite has operations but no locate operation, or its locate operation is not deterministic, or
-    its params are not exactly `(id: string)`. A kind with no operations is allowed: it is declared but
+    its first param is not `id: string`. A kind with no operations is allowed: it is declared but
     not yet defined.
 
     A kind with an expand operation is composite: an instance of it has no code of its own, only the
@@ -83,8 +107,11 @@ class SlytherArtifactKind {
     and a kind it does not reference is not emitted. A composite kind is not asked for any
     #{SlytherBuiltinOperation}, since there is nothing to list or locate.
 
-    The locate operation is how every other operation finds an artifact of the kind: given its id, it
-    prints where the artifact is and exits 0, or prints nothing and exits 1 when it does not exist. An
+    The locate operation is how every other operation finds an artifact of the kind: given its id, and
+    whatever else its params ask of the instance, it prints where the artifact is and exits 0, or prints
+    nothing and exits 1 when it does not exist. It takes the id first, so an instance is always named to
+    it, and may take more params when the id alone does not say where the artifact is: they are filled
+    from the instance as the params of create are. An
     artifact may be spread over several files, so it prints one segment per line: a path, for a whole
     file or a whole folder, or `path:start-end`, for the lines of a file from start to end, both inclusive
     and starting at 1. A folder stands for its structure, what it holds directly, and not for the content
@@ -159,7 +186,7 @@ class SlytherExpansion {
     parent and is updated when that prose changes.
 
     It must throw an error, naming the instance and the reason, when the text does not parse with
-    #{SlytherParser}, when it holds anything but a declaration of an artifact: a directive, a kind, an
+    #{SlytherParser}, which includes a declaration that takes its prose from a file, when it holds anything but a declaration of an artifact: a directive, a kind, an
     operation or a step; when the kind of a declaration is not one the expand of the parent references,
     or is composite, or has no create operation, since what it emits could never be made; when a
     declaration gives nothing for a param of the create of its kind that is not optional, where id is
@@ -214,9 +241,27 @@ class SlytherParser {
     only nest deterministic blocks, its steps. Since run is a kind of its own, declaring `@artifact run`
     must throw an error.
 
+    Any declaration, whether an artifact, a kind, a nested block or a `@run`, may take its prose from a file
+    instead of a body, writing `from "path"` or `ref "path"` where the brace would open it. The path is
+    relative to the script that declares it. `from` embeds the text of the file as the content, without the
+    blank lines around it, so whoever reads the prose reads the file; `ref` only points at it, so whoever
+    runs with tools reads the file when it needs it. Since a declaration taken from a file has no body, it
+    nests nothing: its children are declared outside, as `Parent::child`. It must throw an error when the
+    file cannot be read, or when a brace follows the path.
+
+    A `ref` may point at a folder as well as a file, since pointing at one is no different from pointing at
+    the other: the content stays empty and the prose tells whoever runs with tools to read the files the
+    folder holds, its hash being the one #{SlytherFolderSource} computes, so adding, removing or editing any
+    file in it changes the artifact. The path of a folder is kept with a trailing separator, so whoever reads
+    it back knows it is a folder without looking at the disk. A `from` may not point at a folder, which holds
+    no text to embed, and must throw an error saying to use `ref`. The path is kept relative to the base the parser
+    is given, the folder everything runs from, which is the folder of the script when none is given.
+
     Declaring the same name twice in the same scope must throw an error.
 
     It can also read declarations into a script already parsed, under a given artifact, which is what
     #{SlytherExpansion} does with what an expand prints: the declarations are parsed as if written inside
-    that artifact, and the hashes of the script are computed again with them.
+    that artifact, and the hashes of the script are computed again with them. A declaration read this way
+    that takes its prose `from` or `ref` a file must throw an error, since what an expand emits has no
+    script to be relative to.
 }

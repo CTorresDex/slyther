@@ -1,19 +1,28 @@
 // Imports
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, relative, resolve, sep } from "node:path";
 import { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import { SlytherClosureHasher } from "./SlytherClosureHasher.class.ts";
+import { SlytherFolderSource } from "./SlytherFolderSource.class.ts";
 import type { SlytherScript } from "./SlytherScript.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
 
 export class SlytherParser {
-    /** `@artifact Name (args): qualifiers { tail`: declares a kind. The brace is optional, the tail is whatever follows it. */
-    private static readonly ARTIFACT =
-        /^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?\s*(?:(\{)(.*))?$/;
-    /** `@run name (params) (config) { tail`: declares a script that runs the project. Only the brace is required. */
-    private static readonly RUN =
-        /^\s*@run(?:\s+([A-Za-z_][\w-]*))?\s*(?:\(([^)]*)\))?\s*(?:\(([^)]*)\))?\s*(?:(\{)(.*))?$/;
+    /**
+     * What may close the shape of a declaration: a brace and the tail that follows it, or `from "path"` or
+     * `ref "path"` and, to report it, a brace written after the path as well.
+     */
+    private static readonly BODY = String.raw`\s*(?:(\{)(.*)|(from|ref)\s+["']([^"']+)["']\s*(\{.*)?)?\s*$`;
+    /** `@artifact Name (args): qualifiers { tail`: declares a kind. The body is optional, the tail is whatever follows the brace. */
+    private static readonly ARTIFACT = new RegExp(
+        String.raw`^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?` + SlytherParser.BODY,
+    );
+    /** `@run name (params) (config) { tail`: declares a script that runs the project. Only the body is required. */
+    private static readonly RUN = new RegExp(
+        String.raw`^\s*@run(?:\s+([A-Za-z_][\w-]*))?\s*(?:\(([^)]*)\))?\s*(?:\(([^)]*)\))?` + SlytherParser.BODY,
+    );
     /** The namespace every script declared with `@run` lives in, which is also its kind. */
     static readonly RUN_KIND = "run";
     /** The name of a script declared with `@run` and no name. */
@@ -22,11 +31,14 @@ export class SlytherParser {
     private static readonly LANG = /^\s*@lang\s+["']([^"']+)["']\s*$/;
     private static readonly USE = /^\s*@use\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*$/;
     /**
-     * `kind name (args): qualifiers { tail`: the args, the qualifiers and the brace are optional, the
+     * `kind name (args): qualifiers { tail`: the args, the qualifiers and the body are optional, the
      * tail is whatever follows the brace on the same line.
      */
-    private static readonly DECLARATION =
-        /^\s*([A-Za-z_][\w-]*)\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?\s*(?:(\{)(.*))?$/;
+    private static readonly DECLARATION = new RegExp(
+        String.raw`^\s*([A-Za-z_][\w-]*)\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?` + SlytherParser.BODY,
+    );
+    /** `kind (args) {`: a block opened with a kind but no name. */
+    private static readonly UNNAMED = /^\s*([A-Za-z_][\w-]*)\s*(?:\([^)]*\))?\s*\{/;
     /** A line that would open a block but is meant as prose. */
     private static readonly ESCAPE = /^(\s*)\\(?=[A-Za-z_])/;
     private static readonly FENCE = /^\s*```/;
@@ -48,19 +60,31 @@ export class SlytherParser {
 
     private declarations = new Map<
         string,
-        { artifact: string; args: string; qualifiers: string; content: string; scope: string }
+        { artifact: string; args: string; qualifiers: string; content: string; scope: string; source?: SlytherArtifact["source"] }
     >();
     private kinds = new Set<string>();
     private implicit = new Set<string>();
     private imported = new Set<string>();
     private lang: string | undefined;
+    /** The script being read, which the path of a `from` or a `ref` is relative to. */
+    private script = "";
+    /** The folder the path of a `from` or a `ref` is kept relative to. */
+    private base = "";
+    /** Whether the declarations read are emitted by an expand, which may not take their prose from a file. */
+    private emitted = false;
 
-    parse(script: SlytherScript): ParsedSlytherScript {
+    /**
+     * Parses the script. The path of every `from` and `ref` is kept relative to the given base, the folder
+     * the prose is read from, which is the folder of the script when none is given.
+     */
+    parse(script: SlytherScript, base?: string): ParsedSlytherScript {
         this.declarations = new Map();
         this.kinds = new Set(SlytherParser.BUILTIN);
         this.implicit = new Set();
         this.imported = script.path ? new Set([resolve(script.path)]) : new Set();
         this.lang = undefined;
+        this.base = resolve(base ?? (script.path ? dirname(script.path) : process.cwd()));
+        this.emitted = false;
 
         this.scan(script.source, script.path);
 
@@ -76,6 +100,7 @@ export class SlytherParser {
                 this.qualifiersOf(declaration, name),
                 declaration.content,
                 this.referencesOf(declaration, args),
+                declaration.source,
             );
         });
 
@@ -100,6 +125,7 @@ export class SlytherParser {
         this.implicit = new Set();
         this.imported = new Set();
         this.lang = parsed.lang;
+        this.emitted = true;
 
         const known = new Set(this.declarations.keys());
         const lines = source.split("\n");
@@ -117,7 +143,7 @@ export class SlytherParser {
                 throw new Error(`"${line.trim()}" is not a declaration.`);
             }
 
-            const [, artifact, name, args, qualifiers, open, tail] = declaration;
+            const [, artifact, name, args, qualifiers, open, tail, mode, file, both] = declaration;
 
             if (artifact === "artifact") {
                 throw new Error(`A kind is declared as "@artifact ${name}", not "artifact ${name}".`);
@@ -127,7 +153,7 @@ export class SlytherParser {
                 throw new Error(`Unknown artifact "${artifact}" of "${parent.name}::${name}".`);
             }
 
-            index = this.declareAt(lines, index, artifact!, name!, `${parent.name}::${name}`, parent.name, args ?? "", qualifiers ?? "", open ? tail! : undefined);
+            index = this.declareAt(lines, index, artifact!, name!, `${parent.name}::${name}`, parent.name, args ?? "", qualifiers ?? "", SlytherParser.bodyOf(open, tail, mode, file, both, `${parent.name}::${name}`));
         }
 
         this.checkParents();
@@ -138,7 +164,7 @@ export class SlytherParser {
                 const args = this.argumentsOf(declaration, name);
                 const references = new Set([...this.referencesOf(declaration, args), `${parent.artifact}:${parent.name}`]);
 
-                return new SlytherArtifact(declaration.artifact, name, args, this.qualifiersOf(declaration, name), declaration.content, [...references].sort());
+                return new SlytherArtifact(declaration.artifact, name, args, this.qualifiersOf(declaration, name), declaration.content, [...references].sort(), declaration.source);
             });
 
         return { parsed: SlytherParser.hashed([...parsed.artifacts, ...added], parsed.lang), added };
@@ -161,12 +187,15 @@ export class SlytherParser {
         const lines = source.split("\n");
         let scope = "";
 
+        this.script = path;
+
         for (let index = 0; index < lines.length; index++) {
             const line = lines[index] ?? "";
             const imported = SlytherParser.IMPORT.exec(line);
 
             if (imported) {
                 this.import(imported[1]!, path);
+                this.script = path;
                 continue;
             }
 
@@ -184,23 +213,23 @@ export class SlytherParser {
             const kind = SlytherParser.ARTIFACT.exec(line);
 
             if (kind) {
-                const [, name, args, qualifiers, open, tail] = kind;
+                const [, name, args, qualifiers, open, tail, mode, file, both] = kind;
 
                 if (name === SlytherParser.RUN_KIND) {
                     throw new Error(`"${name}" is the kind of the scripts declared with @run and cannot be declared as a kind.`);
                 }
 
-                index = this.declareAt(lines, index, "artifact", name!, name!, "", args ?? "", qualifiers ?? "", open ? tail! : undefined);
+                index = this.declareAt(lines, index, "artifact", name!, name!, "", args ?? "", qualifiers ?? "", SlytherParser.bodyOf(open, tail, mode, file, both, name!));
                 continue;
             }
 
             const run = SlytherParser.RUN.exec(line);
 
             if (run) {
-                const [, name = SlytherParser.RUN_DEFAULT, params, config, open, tail] = run;
+                const [, name = SlytherParser.RUN_DEFAULT, params, config, open, tail, mode, file, both] = run;
 
-                if (!open) {
-                    throw new Error(`The script "${name}" declared with @run must have a body in braces.`);
+                if (!open && !mode) {
+                    throw new Error(`The script "${name}" declared with @run must have a body in braces, or take it from a file with from or ref.`);
                 }
 
                 this.implicitNamespace(SlytherParser.RUN_KIND);
@@ -213,7 +242,7 @@ export class SlytherParser {
                     SlytherParser.RUN_KIND,
                     SlytherParser.runArgsOf(name, params, config),
                     "",
-                    tail!,
+                    SlytherParser.bodyOf(open, tail, mode, file, both, `${SlytherParser.RUN_KIND}::${name}`),
                 );
                 continue;
             }
@@ -232,7 +261,7 @@ export class SlytherParser {
                 continue;
             }
 
-            const [, artifact, name, args, qualifiers, open, tail] = declaration;
+            const [, artifact, name, args, qualifiers, open, tail, mode, file, both] = declaration;
             const qualified = scope ? `${scope}::${name}` : name!;
 
             if (artifact === "artifact") {
@@ -243,8 +272,27 @@ export class SlytherParser {
                 throw new Error(`Unknown artifact "${artifact}" of "${qualified}".`);
             }
 
-            index = this.declareAt(lines, index, artifact!, name!, qualified, scope, args ?? "", qualifiers ?? "", open ? tail! : undefined);
+            index = this.declareAt(lines, index, artifact!, name!, qualified, scope, args ?? "", qualifiers ?? "", SlytherParser.bodyOf(open, tail, mode, file, both, qualified));
         }
+    }
+
+    /**
+     * What closes a declaration: the tail after its brace, the file its prose is taken from, or nothing.
+     * Throws when it has both a file and a brace.
+     */
+    private static bodyOf(
+        open: string | undefined,
+        tail: string | undefined,
+        mode: string | undefined,
+        file: string | undefined,
+        both: string | undefined,
+        owner: string,
+    ): { tail: string } | { mode: "from" | "ref"; file: string } | undefined {
+        if (both) {
+            throw new Error(`"${owner}" takes its prose from "${file}", so it cannot have a body in braces as well.`);
+        }
+
+        return open ? { tail: tail! } : mode ? { mode: mode as "from" | "ref", file: file! } : undefined;
     }
 
     /** Declares the namespace unless something of that name is declared already, which a later declaration may replace. */
@@ -283,7 +331,8 @@ export class SlytherParser {
 
     /**
      * Declares the artifact opened at the given line and reads its body, if it has one, up to the
-     * brace that closes it. Returns the index of the last line the body took.
+     * brace that closes it, or the file its prose is taken from. Returns the index of the last line the
+     * body took.
      */
     private declareAt(
         lines: string[],
@@ -294,23 +343,73 @@ export class SlytherParser {
         scope: string,
         args: string,
         qualifiers: string,
-        tail: string | undefined,
+        body: ReturnType<typeof SlytherParser.bodyOf>,
     ): number {
+        if (body && "mode" in body && this.emitted) {
+            throw new Error(`"${qualified}" takes its prose ${body.mode} "${body.file}", but what an expand emits cannot take its prose from a file.`);
+        }
+
         this.declare(qualified, artifact, scope, args, qualifiers);
 
         if (artifact === "artifact") {
             this.kinds.add(name);
         }
 
-        if (tail === undefined) {
+        if (body === undefined) {
             return index;
         }
 
-        const body = this.body(lines, index, tail, artifact, qualified);
+        if ("mode" in body) {
+            this.readSource(qualified, body.mode, body.file);
 
-        this.declarations.get(qualified)!.content = body.content;
+            return index;
+        }
 
-        return body.end;
+        const read = this.body(lines, index, body.tail, artifact, qualified);
+
+        this.declarations.get(qualified)!.content = read.content;
+
+        return read.end;
+    }
+
+    /**
+     * Takes the prose of a declaration from a file, relative to the script being read: `from` embeds what
+     * it holds, without the blank lines around it, and `ref` only points at it. Either way the source
+     * keeps its hash, so a change to the file is a change to the artifact.
+     *
+     * A `ref` may point at a folder as well, since pointing at one is no different from pointing at a
+     * file: the hash covers everything the folder holds. A `from` may not, since a folder holds no text
+     * to embed.
+     */
+    private readSource(qualified: string, mode: "from" | "ref", file: string): void {
+        const resolved = resolve(this.script ? dirname(this.script) : process.cwd(), file);
+        const where = this.script || process.cwd();
+
+        if (statSync(resolved, { throwIfNoEntry: false })?.isDirectory()) {
+            if (mode === "from") {
+                throw new Error(`"${file}", the prose of "${qualified}", is a folder, which holds no text to embed with from. Point at it with ref instead.`);
+            }
+
+            const declaration = this.declarations.get(qualified)!;
+
+            declaration.content = "";
+            declaration.source = { mode, path: relative(this.base, resolved) + sep, hash: SlytherFolderSource.hash(resolved) };
+
+            return;
+        }
+
+        let text: string;
+
+        try {
+            text = readFileSync(resolved, "utf-8");
+        } catch {
+            throw new Error(`Cannot read "${file}", the prose of "${qualified}", from "${where}".`);
+        }
+
+        const declaration = this.declarations.get(qualified)!;
+
+        declaration.content = mode === "from" ? text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd() : "";
+        declaration.source = { mode, path: relative(this.base, resolved), hash: createHash("sha256").update(text).digest("hex") };
     }
 
     /**
@@ -338,16 +437,16 @@ export class SlytherParser {
             }
 
             if (!fenced && !SlytherParser.FENCE.test(line)) {
-                if (SlytherParser.ESCAPE.test(line) && SlytherParser.DECLARATION.test(line.replace("\\", ""))) {
+                if (SlytherParser.ESCAPE.test(line) && (SlytherParser.DECLARATION.test(line.replace("\\", "")) || SlytherParser.UNNAMED.test(line.replace("\\", "")))) {
                     line = line.replace("\\", "");
                 } else {
                     const nested = SlytherParser.DECLARATION.exec(line);
 
-                    if (nested?.[5]) {
-                        const [, child, name, args, qualifiers, , rest] = nested;
+                    if (nested?.[5] || nested?.[7]) {
+                        const [, child, name, args, qualifiers, open, rest, mode, file, both] = nested;
 
                         if (allowed.includes(child!)) {
-                            index = this.declareAt(lines, index, child!, name!, `${owner}::${name}`, owner, args ?? "", qualifiers ?? "", rest!);
+                            index = this.declareAt(lines, index, child!, name!, `${owner}::${name}`, owner, args ?? "", qualifiers ?? "", SlytherParser.bodyOf(open, rest, mode, file, both, `${owner}::${name}`));
 
                             if (++index >= lines.length) {
                                 throw new Error(`Unterminated ${artifact} "${owner}".`);
@@ -359,6 +458,12 @@ export class SlytherParser {
 
                         if (this.kinds.has(child!)) {
                             throw new Error(`"${child}" cannot be declared inside ${artifact} "${owner}".`);
+                        }
+                    } else {
+                        const unnamed = SlytherParser.UNNAMED.exec(line)?.[1];
+
+                        if (unnamed && allowed.includes(unnamed)) {
+                            throw new Error(`The ${unnamed} block inside ${artifact} "${owner}" needs a name, as in "${unnamed} setup {".`);
                         }
                     }
 
@@ -511,8 +616,8 @@ export class SlytherParser {
         return optional ? { kind: "type", value: type, optional } : { kind: "type", value: type };
     }
 
-    private referencesOf(declaration: { content: string; scope: string }, args: SlytherArtifact["args"]): string[] {
-        const prose = declaration.content.replace(SlytherParser.CODE, "");
+    private referencesOf(declaration: { content: string; scope: string; source?: SlytherArtifact["source"] }, args: SlytherArtifact["args"]): string[] {
+        const prose = declaration.source ? "" : declaration.content.replace(SlytherParser.CODE, "");
         const written = [
             ...[...prose.matchAll(SlytherParser.REFERENCE)].map((match) => match[1]!),
             ...args

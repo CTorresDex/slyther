@@ -125,9 +125,9 @@ export class SlytherArtifactKind {
         return this.artifact.name;
     }
 
-    /** The rules every artifact of the kind must follow. */
+    /** The rules every artifact of the kind must follow, as a pointer to their file when they are a ref. */
     get rules(): string {
-        return this.artifact.content;
+        return this.artifact.prose;
     }
 
     /** The operation of the given name, if the kind defines it. */
@@ -154,7 +154,7 @@ export class SlytherArtifactKind {
             if (operation.deterministic) {
                 this.checkDeterministic(operation, parsed);
             } else if (operation.steps.length === 0) {
-                if (operation.artifact.content.trim().length === 0) {
+                if (operation.artifact.prose.trim().length === 0) {
                     throw new Error(`Operation "${operation.artifact.name}" has no steps.`);
                 }
 
@@ -184,8 +184,8 @@ export class SlytherArtifactKind {
             throw new Error(`Operation "${locate.artifact.name}" must be deterministic.`);
         }
 
-        if (locate && !SlytherArtifactKind.isIdSignature(locate.params)) {
-            throw new Error(`Operation "${locate.artifact.name}" must have the params (id: string).`);
+        if (locate && !SlytherArtifactKind.takesId(locate.params)) {
+            throw new Error(`Operation "${locate.artifact.name}" must take (id: string) as its first param.`);
         }
     }
 
@@ -242,7 +242,7 @@ export class SlytherArtifactKind {
     ): void {
         const { artifact } = operation;
         const name = artifact.name.slice(artifact.name.lastIndexOf("::") + 2);
-        const step = new SlytherArtifact(kind, `${artifact.name}::${name}`, [], [], artifact.content, artifact.references);
+        const step = artifact.as(kind, `${artifact.name}::${name}`);
 
         operation.steps.push({ artifact: step, closureHash: operation.closureHash, ...this.langOf(step, parsed) });
     }
@@ -336,8 +336,9 @@ export class SlytherArtifactKind {
         });
     }
 
-    private static isIdSignature(params: SlytherArtifactKind["operations"][number]["params"]): boolean {
-        return params.length === 1 && params[0]!.name === "id" && params[0]!.type === "string" && !params[0]!.optional;
+    /** Whether the first param of the operation is the id, which is how an instance is named to it. */
+    private static takesId(params: SlytherArtifactKind["operations"][number]["params"]): boolean {
+        return params[0]?.name === "id" && params[0].type === "string" && !params[0].optional;
     }
 
     private static checkQualifiers(artifact: SlytherArtifact, allowed: string[]): void {

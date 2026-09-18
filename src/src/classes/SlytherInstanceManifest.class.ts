@@ -17,6 +17,8 @@ export class SlytherInstanceManifest {
                 specHash: string;
                 /** The instance whose expand emitted it, when it was not declared by hand. */
                 parent?: string;
+                /** The args locate was run with, when it takes more than the id, so the instance can be found again once its declaration is gone or its args changed. */
+                locatedWith?: string[];
                 /** The hash of the code of the instance, as located, without where it is. */
                 contentHash: string;
                 /** The `key shape` lines of the instance when it was checked, if its kind prints them. */
