@@ -13,6 +13,8 @@ import { SlytherScript } from "../src/classes/SlytherScript.class.ts";
 class FakeGenerator extends SlytherGenerator {
     readonly asked: string[] = [];
     readonly fixed: string[] = [];
+    /** What it was told to write every script from, keyed by the path of the script. */
+    readonly prompts: Record<string, string> = {};
 
     constructor(readonly scripts: Record<string, string | string[]>) {
         super();
@@ -24,6 +26,7 @@ class FakeGenerator extends SlytherGenerator {
         const content = Array.isArray(registered) ? (registered.length > 1 ? registered.shift()! : registered[0]!) : registered;
 
         (session ? this.fixed : this.asked).push(path);
+        this.prompts[path] = prompt;
 
         return { result: { files: [{ path, content: `${content}\n` }], dependencies: {} } as T, session: "s" };
     }
@@ -287,6 +290,39 @@ describe("SlytherArtifactBuilder expand", () => {
         expect(build(generator, COMPOSITE, 1)).rejects.toThrow(
             'c/expand/expand.sh printed declarations that are not accepted:\nc:sample emitted the c "sample::nested", but its expand does not reference c: it may only emit k.',
         );
+    });
+
+    test("a script is only offered the operations built before it, so none can run one that runs it back", async () => {
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await build(generator);
+
+        const offered = (path: string) =>
+            (generator.prompts[path]!.split("- The operations of the kind built before this one")[1] ?? "")
+                .split("\n")
+                .filter((line) => line.startsWith("- "))
+                .map((line) => line.slice(2, line.indexOf(" ", 2)));
+
+        // locate is built first, so it is offered nothing: what made it run list, which ran it back.
+        expect(offered("k/locate/locate.sh")).toEqual([]);
+        expect(offered("k/list/list.sh")).toEqual(["locate"]);
+        expect(offered("k/signature/signature.sh")).toEqual(["locate", "list"]);
+        expect(offered("k/create/scaffold.sh").sort()).toEqual(["list", "locate", "signature", "uses"]);
+    });
+
+    test("a rebuild of an operation is still only offered the ones built before it", async () => {
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await build(generator);
+        await rm(join(root, ARTIFACTS, "k/locate/locate.sh"));
+
+        const rebuilt = new FakeGenerator(SCRIPTS);
+
+        // Everything is in the manifest now, and locate must still not be told of the operations built after it.
+        await build(rebuilt);
+
+        expect(rebuilt.asked).toEqual(["k/locate/locate.sh"]);
+        expect(rebuilt.prompts["k/locate/locate.sh"]).not.toContain("- The operations of the kind built before this one");
     });
 });
 

@@ -47,3 +47,10 @@ command check {
     touching its code, prints what happened to every instance with its errors, an emitted instance indented
     under its parent, and exits 1 when any fails or is missing
 }
+
+command lsp {
+    Input: the --stdio flag, accepted for editors that pass it
+
+    Serves the language server protocol over stdio with a #{LSP::SlytherLanguageServer}, for an editor to
+    spawn, and never returns
+}

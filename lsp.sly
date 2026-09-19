@@ -1,0 +1,53 @@
+@import "./compiler.sly"
+@use LSP
+
+class SlytherLanguageService {
+    What an editor asks about Slyther scripts, answered from paths and positions alone, with no protocol
+    in it, so it is tested as any class. It is created with what the editor holds for a path, or nothing
+    when the file is not open, so the disk is read instead, and it forgets everything analyzed when told
+    something changed.
+
+    The project of a file is the nearest main.sly up the tree whose imports reach the file, or the file on
+    its own when none does. It is parsed leniently with #{Compiler::SlytherParser}, reading what the editor
+    holds, and when nothing is wrong with what it parsed, its kinds and scripts are grouped with
+    #{Compiler::SlytherArtifactKind} and #{Compiler::SlytherRunScript} as well, so what is wrong with their
+    shape, and every warning, is reported on the declaration the message names, or on the first line of
+    the entry point when it names none. What it answers comes from the #{Compiler::SlytherSourceMap} of
+    the project:
+
+    - diagnostics: What is wrong in a file, in the order found
+    - symbols: The declarations of a file as a tree, a `Parent::child` declared in the same file under its
+      parent, named by what follows the parent's name, each with its kind, its lines and the columns of
+      its name
+    - workspace symbols: Every declaration of the project whose name holds a query, ignoring case
+    - folding: The lines every block of a file may fold, from the line it opens on to the one before it
+      closes, for the blocks that span more than two lines
+    - definition: Where what is written at a position is declared: the name of a declaration is its own,
+      a reference, the type of an arg or the kind that opens a declaration goes to what it resolves to,
+      every time it is declared, and a path goes to the file it names, when it is one
+    - references: Everywhere the declaration written at a position, or the one the reference at it
+      resolves to, is referenced, in prose, as a type or as a kind, and where it is declared when asked
+    - hover: The head of the declaration written or referenced at a position as it is written, then its
+      prose cut short after twelve lines, as markdown, or the path a position is on and whether it exists
+    - completions: What may be written at a position, given the line up to it: after `#{`, every
+      declared name and, for a name inside the scope the line resolves in or one enclosing it, the
+      shorter name that resolves to it; after `@use`, the namespaces; after the colon of an arg, the
+      built-in types and the names again; after the colon of a declaration, the qualifiers; and on a
+      line that holds nothing else yet, the kinds the block around it may contain, or, inside no block,
+      the declared kinds and the directives. Every item says the columns it replaces, what was written
+      of it so far
+}
+
+class SlytherLanguageServer {
+    Serves the language server protocol over a pair of streams, stdin and stdout unless given others,
+    handing every request to a #{SlytherLanguageService} that reads the documents the editor holds open,
+    and translating paths and positions to what the protocol wants: uris, ranges, symbol kinds and
+    completion kinds, each completion as an edit of the columns it replaces. It offers incremental
+    synchronization, completion triggered by a brace, an at sign, a colon and a space, hover, definition,
+    references, document and workspace symbols and folding ranges.
+
+    Once a document opens, changes or closes it forgets what the service analyzed, waits a moment for
+    typing to settle, and reports what is wrong in every open document, clearing what it reported for a
+    document that closed. Since stdout carries the protocol alone, once it listens anything printed goes
+    to stderr.
+}

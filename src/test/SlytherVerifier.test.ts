@@ -45,6 +45,15 @@ describe("SlytherVerifier", () => {
         expect(await verifier.verify({ operation: "list", script: bad, runtime })).toStartWith("list-bad.sh must exit 0 but exited 2");
     });
 
+    test("a script that does not finish is killed, with everything it spawned, and fails", async () => {
+        // A script that runs one that runs it back never returns: it is killed instead of multiplying behind the build.
+        const script = await write("hangs.sh", "sleep 60\n");
+        const failure = await new SlytherVerifier(root, 500).verify({ operation: "list", script, runtime });
+
+        expect(failure).toContain("did not finish in 500ms and was killed");
+        expect(failure).toContain("it must never run a script that runs it back");
+    });
+
     test("locate must find the first id list prints", async () => {
         const locate = { script: await write("locate.sh", '[ "$1" = "a" ] && echo src/a.ts && exit 0; exit 1\n'), runtime };
         const ok = await write("list-ok.sh", "echo a\n");

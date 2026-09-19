@@ -2,9 +2,15 @@
 @use Build
 
 class ProcessUtils {
-    Runs a command, given as the words of its command line, with an optional working directory and an
-    optional text handed over stdin, and returns its exit code, its stdout and its stderr once it exits.
-    A command that cannot be spawned returns exit code 127 and the reason as its stderr.
+    Runs a command, given as the words of its command line, with an optional working directory, an
+    optional text handed over stdin and an optional timeout, and returns its exit code, its stdout and
+    its stderr once it exits. A command that cannot be spawned returns exit code 127 and the reason as
+    its stderr.
+
+    Every command runs in a process group of its own, killed whole once the command exits and once it
+    outruns its timeout, so nothing it spawned outlives it: a script that runs another, which runs it
+    back, dies with the command instead of multiplying behind it. A command that outruns its timeout
+    returns the exit code that says so, and one given no timeout is waited on for as long as it runs.
 }
 
 class SlytherRuntime {
@@ -76,7 +82,9 @@ class SlytherVerifier {
     Checks that the script written for a deterministic step works before it is recorded as built, and
     returns why it does not, or nothing when it does. It is created with the root of the project.
 
-    Every script is checked for syntax with the command of its #{SlytherRuntime}. The scripts of the
+    Every script is checked for syntax with the command of its #{SlytherRuntime}, and every run it makes
+    is given a timeout, after which the script is killed, with everything it spawned, and fails, so a
+    script that hangs or that spawns without end never passes. The scripts of the
     read-only operations, locate, list, signature and uses, are also run, since running them changes
     nothing: list with no args must exit 0, and, when the id alone locates an artifact of the kind, locate
     must find the first id list prints, so list prints the ids locate takes; the others must exit 0 or 1
@@ -131,9 +139,10 @@ class SlytherArtifactBuilder {
     order, as the command to run for a deterministic one, with every param as `"{name}"`, and as the
     markdown to follow for an llm one. A script is asked from the generator with a
     #{SlytherGenerationTask}: its instructions hold the rules of the kind, the operation and its params,
-    the step, the conventions every script follows and the commands that run the other deterministic
-    operations of the kind already built, and its context holds the prose of every artifact the kind, the
-    operation or the step reference. The generator reads no files while it writes a script, so wherever
+    the step, the conventions every script follows and the commands that run the deterministic operations
+    of the kind built before it, never the ones built after, so what a script may run is what was written
+    without knowing of it and no script can run one that runs it back, and its context holds the prose of
+    every artifact the kind, the operation or the step reference. The generator reads no files while it writes a script, so wherever
     these hold the prose of a `ref`, they hold the text of its file instead, while the markdown of an llm
     step and operation.md, which are followed with tools, only point at it. Once written, the dependencies the reply declares are recorded, the
     dependencies file of the lang is rewritten when their union changed and installed, and the script is

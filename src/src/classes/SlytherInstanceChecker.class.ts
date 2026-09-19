@@ -15,6 +15,8 @@ import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 export class SlytherInstanceChecker {
     /** The folder, next to the manifest, where what every instance of a composite kind emitted is written. */
     static readonly EXPANDED = "expanded";
+    /** How long a script of an operation gets to finish before it is killed, with everything it spawned, and counted as a failure. */
+    private static readonly TIMEOUT = 60_000;
     /** What an llm step of evaluate must reply. */
     private static readonly VERDICT = {
         type: "object",
@@ -275,7 +277,7 @@ export class SlytherInstanceChecker {
         for (const step of operation.steps) {
             this.options.say?.(`${key}: expanding with ${step.run!.join(" ")}`);
 
-            const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd });
+            const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd, timeout: SlytherInstanceChecker.TIMEOUT });
 
             if (result.code !== 0) {
                 throw new Error(`expanding ${key} failed:\n${result.stderr || result.stdout}`);
@@ -715,7 +717,7 @@ export class SlytherInstanceChecker {
             if (step.run) {
                 this.options.say?.(`${key}: evaluating with ${step.run.join(" ")}`);
 
-                const result = await ProcessUtils.run([...step.run, ...SlytherInstanceChecker.argsOf(operation, instance, key, [])], { cwd: this.cwd });
+                const result = await ProcessUtils.run([...step.run, ...SlytherInstanceChecker.argsOf(operation, instance, key, [])], { cwd: this.cwd, timeout: SlytherInstanceChecker.TIMEOUT });
 
                 if (result.code !== 0) {
                     return { pass: false, errors: SlytherInstanceChecker.linesOf(`${result.stdout}\n${result.stderr}`) };
@@ -772,7 +774,7 @@ export class SlytherInstanceChecker {
             for (const step of operation.steps) {
                 this.options.say?.(`${key}: ${verb} with ${step.run!.join(" ")}`);
 
-                const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd });
+                const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd, timeout: SlytherInstanceChecker.TIMEOUT });
 
                 if (result.code !== 0) {
                     throw new Error(`${name === "create" ? "Creating" : "Updating"} ${key} failed:\n${result.stderr || result.stdout}`);
@@ -901,7 +903,7 @@ export class SlytherInstanceChecker {
         let stdout = "";
 
         for (const step of record.steps) {
-            const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd });
+            const result = await ProcessUtils.run([...step.run!, ...args], { cwd: this.cwd, timeout: SlytherInstanceChecker.TIMEOUT });
 
             if (result.code !== 0) {
                 return { code: result.code, stdout: "" };

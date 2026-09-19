@@ -272,4 +272,41 @@ class SlytherParser {
     that artifact, and the hashes of the script are computed again with them. A declaration read this way
     that takes its prose `from` or `ref` a file must throw an error, since what an expand emits has no
     script to be relative to.
+
+    It is created with options: lenient, which records what is wrong in its #{SlytherSourceMap} and keeps
+    reading instead of throwing at the first problem, and a reader, which gives what a path holds instead
+    of the disk, or nothing to leave it to the disk, so an editor hands it what it has open. Whatever the
+    options, it keeps the #{SlytherSourceMap} of the script last parsed, with every declaration, reference
+    and path where it was written.
+
+    When lenient, every problem is reported where it was written, on the columns that are wrong when they
+    are known, else on the whole line, and reading goes on as if it were not there, in the way that loses
+    the least: a lang declared twice keeps the first, a kind unknown or written as a plain declaration is
+    declared anyway, a name declared twice keeps the last, a declaration with both a file and a brace
+    keeps the brace, a block left unterminated ends with the script, a file that cannot be read leaves the
+    prose empty, an import that cannot be read is skipped, a reference or a type that resolves to nothing
+    is left out, and a malformed arg is dropped.
+}
+
+class SlytherSourceMap {
+    Where everything a #{SlytherParser} read was written, and what it found wrong, for an editor to point
+    at. Every line and column counts from 0, and the end of a span is the column after its last character.
+    It holds:
+
+    - files: Every script read, as an absolute path, in the order read
+    - declarations: Every declaration read, in the order read, with its qualified name, its kind, its
+      scope, its file, the line it opens on and the last line its body takes, the same line when it has no
+      body, and the columns of its kind, or its directive, and of its name on the opening line. A name
+      declared twice is listed twice, so both are found
+    - references: Every name written that points at a declaration, where it sits: a `#{Name}` in prose
+      outside inline code, the type of an arg, or the kind that opens a declaration, with the name as
+      written, the scope it resolves in, the declaration it is written in and, once everything is
+      declared, the qualified name it resolves to, if any
+    - paths: Every path an `@import`, a `from` or a `ref` writes, with the absolute path it points at
+    - diagnostics: Everything found wrong, in the order found, each with its message, its severity and
+      where it is
+
+    It finds the first declaration of a name, the innermost declaration whose lines hold a line of a file,
+    and what is written under a position of a file: the name of a declaration, a reference or a path,
+    where a position right after the last character still counts as on it, as a cursor does.
 }

@@ -130,9 +130,7 @@ export class SlytherArtifactBuilder {
         const entries: SlytherArtifactBuilder["entry"][] = [];
 
         for (const kind of kinds) {
-            const operations = [...kind.operations].sort(
-                (a, b) => SlytherArtifactBuilder.rankOf(a.artifact.name) - SlytherArtifactBuilder.rankOf(b.artifact.name),
-            );
+            const operations = SlytherArtifactBuilder.orderedOf(kind);
 
             for (const operation of operations) {
                 const name = SlytherArtifactBuilder.shortOf(operation.artifact.name);
@@ -420,12 +418,15 @@ export class SlytherArtifactBuilder {
         runtime: SlytherRuntime,
         record: SlytherArtifactManifest["operations"][string],
     ): string {
+        const order = SlytherArtifactBuilder.orderedOf(kind).map((other) => SlytherArtifactBuilder.shortOf(other.artifact.name));
+        const rank = order.indexOf(record.name);
         const others = Object.values(this.manifest.operations)
             .filter(
                 (other) =>
                     other.kind === kind.name &&
-                    other.name !== record.name &&
                     other.deterministic &&
+                    order.indexOf(other.name) >= 0 &&
+                    order.indexOf(other.name) < rank &&
                     other.steps.every((step) => this.manifest.files[step.path]),
             )
             .map(
@@ -457,7 +458,7 @@ export class SlytherArtifactBuilder {
             "- It prints its result on stdout and its errors on stderr, never asks for input, and exits with the codes the operation describes: 0 on success and 1 when what it looks for does not exist, unless the operation says otherwise.",
             `- It is a single, self-contained file${runtime.lang === "ts" ? " run by bun, so it may use the Bun and node APIs" : ""}, importing only the dependencies it declares.`,
             ...(others.length > 0
-                ? ["- The other operations of the kind are scripts it may run instead of reimplementing them:", ...others]
+                ? ["- The operations of the kind built before this one are scripts it may run instead of reimplementing them, and none of them runs this one, so running one never comes back here:", ...others]
                 : []),
             ...(record.name === SlytherArtifactKind.EXPAND ? ["", ...SlytherArtifactBuilder.emitsOf(kinds, kind, this.cwd)] : []),
         ].join("\n");
@@ -608,6 +609,13 @@ export class SlytherArtifactBuilder {
 
             await rmdir(current);
         }
+    }
+
+    /** The operations of the kind in the order they are built, so a script is only ever offered the ones built before it. */
+    private static orderedOf(kind: SlytherArtifactKind): SlytherArtifactKind["operations"] {
+        return [...kind.operations].sort(
+            (a, b) => SlytherArtifactBuilder.rankOf(a.artifact.name) - SlytherArtifactBuilder.rankOf(b.artifact.name),
+        );
     }
 
     private static rankOf(name: string): number {
