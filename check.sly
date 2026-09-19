@@ -10,6 +10,9 @@ class SlytherInstanceManifest {
       artifact it references that has no code of its own: a kind, whose hash is its rules, a plain
       artifact, or an instance of a composite kind. So a change to its prose or its args is noticed, and
       so is a change to what it leans on
+    - rulesHash: The scope hash of its kind, which is its rules and what they reference, so a change to
+      what every instance of the kind must do is noticed by each of them. Absent in a manifest written
+      before version 2
     - parent: The instance whose expand emitted it, when it was not declared by hand
     - locatedWith: The args locate was run with, when it takes more than the id, so the instance can be
       found again once its declaration is gone or its args changed
@@ -23,7 +26,11 @@ class SlytherInstanceManifest {
       kind, as built: locate, signature, uses and evaluate
     - result: pass, fail, missing or orphan, and errors: what evaluate reported
 
-    Loading a manifest that does not exist gives an empty one, and it is saved with its instances sorted.
+    It records the version it was written with, 2, so one written before is brought forward: every
+    instance is taken to have been brought in line with the rules of its kind as they are now, so what it
+    already complies with is not updated again and only a change made from then on is noticed. Loading a
+    manifest that does not exist gives an empty one at the current version, and it is saved with its
+    version and with its instances sorted.
 }
 
 class SlytherInstanceChecker {
@@ -62,13 +69,25 @@ class SlytherInstanceChecker {
     the instance, filled as create fills them, and so are signature and uses: when it exits 1 the instance
     is missing, and, with
     compile, when its kind has a create operation, it is created and then evaluated, otherwise nothing
-    else is done. Otherwise its content hash, its signature and what it uses are computed, and, when its
-    spec hash changed and compile is on and its kind has an update operation, it is updated and then
-    evaluated, since its declaration rules over its code. Else it is evaluated again when it was never
-    evaluated, when its spec hash or its content hash changed, when what evaluates it changed, when it
-    failed last time and compile is on, or when a dependency changed in a way it uses. Without compile, a
-    spec hash that changed is not recorded as seen, so a later build still updates the instance. For a
-    dependency, the signature it had when
+    else is done. When it exits 0 but prints a segment that is not there, or a range of lines of a
+    folder, the instance fails with what it printed and what locate must print instead, and nothing is
+    created over it, since where it is was never established; the rest of the instances go on, so one
+    kind whose locate is wrong never stops a build.
+
+    Otherwise its content hash, its signature and what it uses are computed, and it is
+    checked for change: it changed when it was never evaluated, when its spec hash changed, when the
+    rules of its kind changed, when its content hash changed, when what evaluates it changed, when it
+    failed last time and compile is on, or when a dependency changed in a way it uses.
+
+    Whatever changed is brought in line with the update operation of its kind before it is evaluated,
+    when compile is on and its kind has one, since the prose rules over the code and the evaluate of a
+    kind only ever covers part of what the prose says: an evaluate that passes says the code met what
+    that evaluate checks, never that it still says what the prose says. Two are not brought in line: an
+    instance with no record yet, which has changed from nothing and is evaluated as it stands, and one
+    that uses a key that is gone, which no update can fix. Without compile, a spec hash or a rules hash
+    that changed is not recorded as seen, so a later build still updates the instance.
+
+    For a dependency, the signature it had when
     this instance was evaluated is compared with the one it has now, key by key, into the keys whose
     shape changed or that are gone, and the keys that are new. What the instance uses of the dependency
     decides: a key, when that key changed; `*`, when any key changed; `**`, when any key changed or was
@@ -91,9 +110,16 @@ class SlytherInstanceChecker {
     Create and update run with their params filled from the instance, by the name of each param: id is
     the name of the instance, errors is the errors it is run to fix, a param named as an arg of the
     instance is the value of that arg, and any other is the prose of the instance; a param that is not
-    optional and gets nothing must throw an error. A deterministic one runs its scripts in order and
-    throws when one fails; any other is its markdown, with the params substituted and the errors
-    appended when there are any, executed by the generator. After either, the instance is located again.
+    optional and gets nothing must throw an error. A deterministic one runs its scripts in order, handed
+    the params as their args, and throws when one fails.
+
+    Any other is its markdown, executed by the generator, and is handed the params twice: substituted
+    where the markdown wrote them in braces, and as the instance it is run on, named with its kind and
+    followed by the value of every param and by what the instance must do, as declared. The substitution
+    alone is not enough, since nothing makes a markdown mention a param, and one that never does would
+    otherwise run without ever being told which instance it is working on. The errors are appended in a
+    section of their own when there are any, so they are not repeated among the params. After either,
+    the instance is located again.
 
     What passes is reported as created, updated, fixed or pass, by what was done to it; what fails as
     fail; what is up to date as kept; and what is missing and cannot be created as missing. With max,

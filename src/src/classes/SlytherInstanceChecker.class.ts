@@ -21,12 +21,16 @@ export class SlytherInstanceChecker {
         properties: { pass: { type: "boolean" }, errors: { type: "array", items: { type: "string" } } },
         required: ["pass", "errors"],
     };
-    /** `path` or `path:start-end`: a segment locate prints. */
-    private static readonly SEGMENT = /^(.+?)(?::(\d+)-(\d+))?$/;
+    /** `path`, `path:start-end` or `path:line`, which is the range of that one line: a segment locate prints. */
+    private static readonly SEGMENT = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/;
     /** How the reason of an instance that uses a key that is gone ends. */
     private static readonly GONE = ", which no longer exists";
     /** The reason of an instance whose declaration changed, so it is updated rather than evaluated. */
     private static readonly SPEC = "its spec changed";
+    /** The reason of an instance whose kind changed its rules, so every instance of it is updated. */
+    private static readonly RULES = "the rules of its kind changed";
+    /** The reason of an instance with code that has no record yet, which is evaluated before anything touches it. */
+    private static readonly NEW = "never evaluated";
 
     private manifest!: SlytherInstanceManifest;
     /** Every artifact of the script being checked, expanded, keyed by `kind:name`. */
@@ -68,6 +72,8 @@ export class SlytherInstanceChecker {
         const instances = this.instancesOf(expanded, kinds, expansions);
         const report: SlytherInstanceChecker["entry"][] = [];
 
+        await this.migrate(instances);
+
         for (const key of Object.keys(this.manifest.instances)) {
             if (!instances.has(key)) {
                 report.push(...(await this.forget(key)));
@@ -80,6 +86,7 @@ export class SlytherInstanceChecker {
             this.manifest.instances[key] = {
                 ...SlytherInstanceChecker.emptyRecord(),
                 specHash: this.specHashOf(instance),
+                rulesHash: instance.rules,
                 evaluatedWith: this.evaluatedWithOf(instance.kind),
                 result: expansion.error ? "fail" : "pass",
                 errors: expansion.error ? [expansion.error] : [],
@@ -126,7 +133,7 @@ export class SlytherInstanceChecker {
                 const record = this.manifest.instances[key];
 
                 if (state.segments === undefined) {
-                    this.manifest.instances[key] = { ...SlytherInstanceChecker.emptyRecord(), specHash: this.specHashOf(instance), ...parent };
+                    this.manifest.instances[key] = { ...SlytherInstanceChecker.emptyRecord(), specHash: this.specHashOf(instance), rulesHash: instance.rules, ...parent };
                     report.push({ key, status: "missing", errors: [], ...parent });
                 } else if (record?.result === "fail") {
                     report.push({ key, status: "fail", reason: "unchanged since it failed", errors: record.errors, ...parent });
@@ -163,9 +170,12 @@ export class SlytherInstanceChecker {
                 status = verdict.pass ? (work.done === "pass" ? "fixed" : work.done) : "fail";
             }
 
-            // Without compile, a spec that changed is not recorded as seen, so a later build still updates it.
+            // Without compile, a spec or a rule that changed is not recorded as seen, so a later build still updates it.
+            const seen = this.options.compile || !this.manifest.instances[key];
+
             this.manifest.instances[key] = {
-                specHash: this.options.compile || !this.manifest.instances[key] ? this.specHashOf(instance) : this.manifest.instances[key].specHash,
+                specHash: seen ? this.specHashOf(instance) : this.manifest.instances[key]!.specHash,
+                rulesHash: seen ? instance.rules : (this.manifest.instances[key]!.rulesHash ?? instance.rules),
                 ...parent,
                 ...(state.locatedWith ? { locatedWith: state.locatedWith } : {}),
                 contentHash: state.contentHash ?? "",
@@ -189,6 +199,24 @@ export class SlytherInstanceChecker {
         await this.manifest.save();
 
         return SlytherInstanceChecker.grouped(report);
+    }
+
+    /**
+     * Brings a manifest written before the rules of a kind were recorded forward: every instance is
+     * taken to have been brought in line with the rules as they are now, so what it already complies
+     * with is not updated again, and only a change made from here on is noticed.
+     */
+    private async migrate(instances: Map<string, SlytherInstanceChecker["instance"]>): Promise<void> {
+        if (this.manifest.version >= SlytherInstanceManifest.VERSION) {
+            return;
+        }
+
+        for (const [key, record] of Object.entries(this.manifest.instances)) {
+            record.rulesHash = instances.get(key)?.rules ?? "";
+        }
+
+        await this.manifest.save();
+        this.options.log?.(`brought the instances manifest forward to version ${SlytherInstanceManifest.VERSION}`);
     }
 
     /**
@@ -399,13 +427,23 @@ export class SlytherInstanceChecker {
      * What an instance needs: why, the operation to run before evaluating it, if any, what to report
      * when it passes, and whether it is certainly broken. Null when nothing is to be done: it is up to
      * date, or it is missing and cannot be created.
+     *
+     * The prose binds the code, and the evaluate of a kind only ever covers part of what the prose
+     * says, so anything that changed is brought in line with the update of its kind before it is
+     * evaluated, rather than trusting an evaluate that passes to mean it still complies. The two that
+     * are not brought in line are an instance with no record yet, which has changed from nothing and is
+     * evaluated as it stands, and one that references a key that is gone, which no update can fix.
      */
     private workOf(
         key: string,
-        instance: { kind: string; artifact: SlytherArtifact; leans: string[] },
+        instance: { kind: string; artifact: SlytherArtifact; leans: string[]; rules: string },
         states: Map<string, SlytherInstanceChecker["state"]>,
     ): { reason: string; operation?: "create" | "update"; done: "created" | "updated" | "pass"; broken: boolean } | null {
         const state = states.get(key)!;
+
+        if (state.invalid !== undefined) {
+            return { reason: state.invalid, done: "pass", broken: true };
+        }
 
         if (state.segments === undefined) {
             return this.options.compile && this.has(instance.kind, "create") ? { reason: "missing", operation: "create", done: "created", broken: false } : null;
@@ -417,11 +455,14 @@ export class SlytherInstanceChecker {
             return null;
         }
 
-        if (reason === SlytherInstanceChecker.SPEC && this.options.compile && this.has(instance.kind, "update")) {
+        const broken = reason.endsWith(SlytherInstanceChecker.GONE);
+        const brings = reason !== SlytherInstanceChecker.NEW && !broken;
+
+        if (brings && this.options.compile && this.has(instance.kind, "update")) {
             return { reason, operation: "update", done: "updated", broken: false };
         }
 
-        return { reason, done: "pass", broken: reason.endsWith(SlytherInstanceChecker.GONE) };
+        return { reason, done: "pass", broken };
     }
 
     /** Whether the work on an instance of the kind asks the llm: its operation, or its evaluate, is not deterministic. */
@@ -445,6 +486,7 @@ export class SlytherInstanceChecker {
         kinds: SlytherArtifactKind[],
         expansions: Map<string, { emitted: string[] }>,
     ): Map<string, SlytherInstanceChecker["instance"]> {
+        const rules = new Map(kinds.map((kind) => [kind.name, kind.scopeHash]));
         const checkable = new Set(kinds.filter((kind) => kind.operations.length > 0).map((kind) => kind.name));
         const composite = new Set(kinds.filter((kind) => kind.composite).map((kind) => kind.name));
         const parents = new Map([...expansions].flatMap(([parent, expansion]) => expansion.emitted.map((key) => [key, parent] as const)));
@@ -460,6 +502,7 @@ export class SlytherInstanceChecker {
                     kind: artifact.artifact,
                     name: artifact.name,
                     artifact,
+                    rules: rules.get(artifact.artifact) ?? "",
                     references: [],
                     leans: [],
                     composite: composite.has(artifact.artifact),
@@ -493,6 +536,8 @@ export class SlytherInstanceChecker {
         contentHash?: string;
         signature?: string[];
         uses?: Record<string, string[]>;
+        /** Why what locate printed cannot be read, when it printed a segment that is not there. */
+        invalid?: string;
     }> {
         const args = this.argsFor(instance.kind, "locate", instance, key);
         const locatedWith = args.length > 1 ? { locatedWith: args } : {};
@@ -507,7 +552,11 @@ export class SlytherInstanceChecker {
         for (const line of SlytherInstanceChecker.linesOf(located.stdout)) {
             const [, path, start, end] = SlytherInstanceChecker.SEGMENT.exec(line)!;
 
-            segments.push({ path: path!, content: await this.contentOf(key, line, path!, start, end) });
+            try {
+                segments.push({ path: path!, content: await this.contentOf(key, line, path!, start, end) });
+            } catch (error) {
+                return { ...locatedWith, invalid: error instanceof Error ? error.message : String(error) };
+            }
         }
 
         segments.sort((a, b) => a.path.localeCompare(b.path) || a.content.localeCompare(b.content));
@@ -533,18 +582,21 @@ export class SlytherInstanceChecker {
         const isFolder = await stat(target).then(
             (info) => info.isDirectory(),
             () => {
-                throw new Error(`${key} is located at "${line}", which does not exist.`);
+                throw new Error(
+                    `the locate of ${key.split(":")[0]} printed "${line}", which does not exist: it must print a path, \`path:start-end\` for a range of lines, or \`path:line\` for one.`,
+                );
             },
         );
 
         if (!isFolder) {
             const content = await readFile(target, "utf-8");
 
-            return start ? content.split("\n").slice(Number(start) - 1, Number(end)).join("\n") : content;
+            // A segment with no end is a single line, so it ends where it starts.
+            return start ? content.split("\n").slice(Number(start) - 1, Number(end ?? start)).join("\n") : content;
         }
 
         if (start) {
-            throw new Error(`${key} is located at "${line}", but a folder has no lines.`);
+            throw new Error(`the locate of ${key.split(":")[0]} printed "${line}", but a folder has no lines.`);
         }
 
         const entries = await readdir(target, { withFileTypes: true });
@@ -575,7 +627,7 @@ export class SlytherInstanceChecker {
      */
     private changeOf(
         key: string,
-        instance: { kind: string; artifact: SlytherArtifact; leans: string[] },
+        instance: { kind: string; artifact: SlytherArtifact; leans: string[]; rules: string },
         state: SlytherInstanceChecker["state"],
         states: Map<string, SlytherInstanceChecker["state"]>,
     ): string | null {
@@ -583,11 +635,15 @@ export class SlytherInstanceChecker {
         const { kind } = instance;
 
         if (!record || record.result === "missing") {
-            return "never evaluated";
+            return SlytherInstanceChecker.NEW;
         }
 
         if (record.specHash !== this.specHashOf(instance)) {
             return SlytherInstanceChecker.SPEC;
+        }
+
+        if ((record.rulesHash ?? instance.rules) !== instance.rules) {
+            return SlytherInstanceChecker.RULES;
         }
 
         if (record.contentHash !== state.contentHash) {
@@ -699,6 +755,12 @@ export class SlytherInstanceChecker {
      * Runs the create or update operation of the kind on the instance, with its params filled from the
      * instance: its scripts in order, or its markdown through the generator with the tools, followed by
      * the errors it is run to fix, when there are any.
+     *
+     * A script is handed its params as its args, so it always has them. A markdown is handed them twice:
+     * substituted where it wrote `{param}`, and as the instance it is run on, with the value of every
+     * param and what the instance must do, as declared. The substitution alone is not enough, since
+     * nothing makes the markdown mention a param, and one that never does would otherwise run without
+     * ever being told which instance it is working on.
      */
     private async perform(name: "create" | "update", instance: { kind: string; name: string; artifact: SlytherArtifact }, key: string, errors: string[]): Promise<void> {
         const operation = this.built.operations[`${instance.kind}::${name}`]!;
@@ -725,6 +787,21 @@ export class SlytherInstanceChecker {
         operation.params.forEach((param, index) => {
             markdown = markdown.replaceAll(`{${param.name}}`, args[index]!);
         });
+
+        // The errors are given their own section below, so they are not repeated among the params.
+        const given = operation.params.map((param, index) => `- ${param.name}: ${args[index]!}`).filter((_, index) => operation.params[index]!.name !== "errors");
+
+        markdown = [
+            markdown,
+            `## The ${instance.kind} to ${name}: ${instance.name}`,
+            "",
+            ...SlytherInstanceChecker.section("### Its params", given),
+            "",
+            "### What it must do",
+            "",
+            SlytherInstanceChecker.specOf(instance.artifact),
+            "",
+        ].join("\n");
 
         const context = SlytherInstanceChecker.section("## What it references", this.contextOf(instance, "###"));
 
@@ -902,7 +979,7 @@ export class SlytherInstanceChecker {
     }
 
     private static emptyRecord(): SlytherInstanceManifest["instances"][string] {
-        return { specHash: "", contentHash: "", dependencies: {}, evaluatedWith: "", result: "missing", errors: [] };
+        return { specHash: "", rulesHash: "", contentHash: "", dependencies: {}, evaluatedWith: "", result: "missing", errors: [] };
     }
 
     /** What happened to an instance: its status, why, its errors, and the instance that emitted it, if any. */
@@ -919,6 +996,8 @@ export class SlytherInstanceChecker {
         kind: string;
         name: string;
         artifact: SlytherArtifact;
+        /** The scope hash of its kind: the rules every instance of it must follow, so a change to them is noticed. */
+        rules: string;
         references: string[];
         leans: string[];
         composite: boolean;

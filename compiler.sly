@@ -113,8 +113,9 @@ class SlytherArtifactKind {
     it, and may take more params when the id alone does not say where the artifact is: they are filled
     from the instance as the params of create are. An
     artifact may be spread over several files, so it prints one segment per line: a path, for a whole
-    file or a whole folder, or `path:start-end`, for the lines of a file from start to end, both inclusive
-    and starting at 1. A folder stands for its structure, what it holds directly, and not for the content
+    file or a whole folder, `path:start-end`, for the lines of a file from start to end, both inclusive
+    and starting at 1, or `path:line`, which is the range of that one line, since that is how a line of a
+    file is written everywhere else. A folder stands for its structure, what it holds directly, and not for the content
     of its files: a kind that cares about some of them prints them as segments of their own.
 
     A kind with operations that is not composite also has the #{SlytherBuiltinOperation} it is due, added
@@ -149,6 +150,8 @@ class ParsedSlytherScript {
     - closureHashes: The closure hash of every artifact, keyed by `kind:name`, as computed by #{SlytherClosureHasher}
     - scopeHashes: The scope hash of every artifact, keyed by `kind:name`, as computed by #{SlytherClosureHasher}
     - lang: The language declared by the `@lang` line, if any
+    - src: The folder the code of the project lives in, declared by the `@src` line, if any, resolved
+      against the script that declared it
 }
 
 class SlytherRunScript {
@@ -210,6 +213,11 @@ class SlytherParser {
 
     An `@lang "name"` line declares the language of the project, the one a deterministic step is written
     in when neither it nor its kind declares one. Writing it twice, in any script, must throw an error.
+
+    An `@src "path"` line declares where the code of the project lives, the folder every instance is
+    written to and every script, operation and LLM runs from. The path is resolved relative to the script
+    that declares it, as an import is, and when no script declares it the project keeps its default.
+    Writing it twice, in any script, must throw an error.
 
     An `@artifact Name (args) { rules }` line declares a kind, as an artifact of the built-in kind artifact,
     and is the only way to make it available: a declaration of a kind that was not declared before it

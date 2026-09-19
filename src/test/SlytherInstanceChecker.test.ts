@@ -200,9 +200,32 @@ describe("SlytherInstanceChecker", () => {
 
         const fixed = await compile();
 
-        expect(statuses(fixed)).toEqual(["k:A kept", "k:B fixed (it failed its last evaluation)"]);
+        expect(statuses(fixed)).toEqual(["k:A kept", "k:B updated (it failed its last evaluation)"]);
         expect(await read("B.txt")).toBe("GOOD\n");
         expect(statuses(await project().check())).toEqual(["k:A kept", "k:B kept"]);
+    });
+
+    test("a locate that prints a segment that is not there fails its instance, and the build goes on", async () => {
+        const broken = { ...SCRIPTS, "k/locate/locate.sh": '[ -f "src/$1.txt" ] || exit 1; if [ "$1" = "B" ]; then echo "src/gone.txt"; else echo "src/$1.txt"; fi' };
+        const report = await compile(new FakeGenerator(broken));
+        const error = 'the locate of k printed "src/gone.txt", which does not exist: it must print a path, `path:start-end` for a range of lines, or `path:line` for one.';
+
+        expect(statuses(report)).toEqual(["k:A pass (never evaluated)", `k:B fail (${error})`]);
+        expect(report[1]!.errors).toEqual([error]);
+        expect(await read("B.txt")).toBe("b\n");
+    });
+
+    test("a segment of one line is that line, and it changes only with it", async () => {
+        await write("B.txt", "one\ntwo\nthree\n");
+        await write("B.range", "2");
+        await project().check();
+        await write("B.txt", "one\ntwo\nCHANGED\n");
+
+        expect(statuses(await project().check())).toEqual(["k:A kept", "k:B kept"]);
+
+        await write("B.txt", "one\nTWO\nCHANGED\n");
+
+        expect(statuses(await project().check())).toEqual(["k:A kept", "k:B pass (its code changed)"]);
     });
 
     test("build creates a missing instance from its declaration, and check only reports it", async () => {
@@ -273,6 +296,88 @@ describe("SlytherInstanceChecker", () => {
     });
 });
 
+describe("SlytherInstanceChecker brings what changed in line", () => {
+    /** An update that marks the file instead of fixing it, so running it is visible even when evaluate passes. */
+    const MARKING = { ...SCRIPTS, "k/update/fix.sh": 'printf "updated\\n" >> "src/$1.txt"' };
+
+    test("the rules of a kind that change update every instance of it, though its evaluate passes", async () => {
+        await compile();
+
+        await writeFile(join(root, "main.sly"), SPEC().replace("rules of k", "the stricter rules of k"));
+
+        expect(statuses(await compile(new FakeGenerator(MARKING)))).toEqual([
+            "k:A updated (the rules of its kind changed)",
+            "k:B updated (the rules of its kind changed)",
+        ]);
+        expect(await read("A.txt")).toBe("a\nupdated\n");
+        expect(statuses(await compile())).toEqual(["k:A kept", "k:B kept"]);
+    });
+
+    test("check reports the rules that changed without touching the code, and a later build still updates it", async () => {
+        await compile();
+        await writeFile(join(root, "main.sly"), SPEC().replace("rules of k", "the stricter rules of k"));
+
+        expect(statuses(await project().check())).toEqual([
+            "k:A pass (the rules of its kind changed)",
+            "k:B pass (the rules of its kind changed)",
+        ]);
+        expect(await read("A.txt")).toBe("a\n");
+        expect(statuses(await compile(new FakeGenerator(MARKING)))).toEqual([
+            "k:A updated (the rules of its kind changed)",
+            "k:B updated (the rules of its kind changed)",
+        ]);
+    });
+
+    test("code edited by hand is brought back in line with the prose, not merely evaluated", async () => {
+        await compile(new FakeGenerator(MARKING));
+        await write("B.txt", "edited by hand\n");
+
+        expect(statuses(await compile(new FakeGenerator(MARKING)))).toEqual(["k:A kept", "k:B updated (its code changed)"]);
+        expect(await read("B.txt")).toBe("edited by hand\nupdated\n");
+    });
+
+    test("a reference that changes updates what depends on it, rather than trusting its evaluate", async () => {
+        await compile(new FakeGenerator(MARKING));
+        await write("A.txt", "a changed\n");
+        await write("A.sig", "name string\n");
+
+        expect(statuses(await compile(new FakeGenerator(MARKING)))).toEqual([
+            "k:A updated (its code changed)",
+            "k:B updated (k:A, which it uses, changed greet)",
+        ]);
+    });
+
+    test("an instance with no record yet is evaluated as it stands, and never updated", async () => {
+        expect(statuses(await compile(new FakeGenerator(MARKING)))).toEqual(["k:A pass (never evaluated)", "k:B pass (never evaluated)"]);
+        expect(await read("A.txt")).toBe("a\n");
+    });
+
+    test("a manifest written before the rules were recorded is brought forward without updating anything", async () => {
+        await compile(new FakeGenerator(MARKING));
+
+        const path = join(root, ".slyther/instances/manifest.json");
+        const read1 = JSON.parse(await readFile(path, "utf-8"));
+
+        for (const record of Object.values(read1.instances) as { rulesHash?: string }[]) delete record.rulesHash;
+
+        await writeFile(path, JSON.stringify({ instances: read1.instances }, null, 4));
+
+        expect(statuses(await compile(new FakeGenerator(MARKING)))).toEqual(["k:A kept", "k:B kept"]);
+
+        const read2 = JSON.parse(await readFile(path, "utf-8"));
+
+        expect(read2.version).toBe(2);
+        expect(read2.instances["k:A"].rulesHash).toMatch(/^[0-9a-f]{64}$/);
+
+        await writeFile(join(root, "main.sly"), SPEC().replace("rules of k", "the stricter rules of k"));
+
+        expect(statuses(await compile(new FakeGenerator(MARKING)))).toEqual([
+            "k:A updated (the rules of its kind changed)",
+            "k:B updated (the rules of its kind changed)",
+        ]);
+    });
+});
+
 describe("SlytherInstanceChecker references", () => {
     const LLM = "operation evaluate (id: string) {\n llm verify { judge it }\n }";
     const RULE = "\n@artifact rule\nrule R { be nice }";
@@ -304,6 +409,36 @@ describe("SlytherInstanceChecker references", () => {
         expect(generator.executed[0]).toContain("## What it references\n\n### k A\n\nthe a\n\nSignature:\n\n- name string\n- greet (): string");
     });
 
+    test("an llm create is told which instance it is run on, with the value of every param", async () => {
+        await rm(join(code(), "B.txt"));
+        await writeFile(
+            join(root, "main.sly"),
+            SPEC().replace("    operation create (id: string, requirements: string): deterministic {\n        deterministic make { writes the requirements }\n    }\n", "    operation create (id: string, requirements: string) {\n        llm write { writes it }\n    }\n"),
+        );
+
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await compile(generator);
+
+        expect(generator.executed[0]).toContain("## The k to create: B\n\n### Its params\n\n- id: B\n- requirements: uses #{A}\n\n### What it must do\n\nuses #{A}");
+    });
+
+    test("an llm update is told which instance it is run on, and the errors stay in their own section", async () => {
+        await writeFile(
+            join(root, "main.sly"),
+            SPEC().replace("    operation update (id: string, errors: string): deterministic {\n        deterministic fix { replaces BAD }\n    }\n", "    operation update (id: string, errors: string) {\n        llm mend { mends it }\n    }\n"),
+        );
+        await compile();
+        await write("B.txt", "edited by hand\n");
+
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await compile(generator);
+
+        expect(generator.executed[0]).toContain("## The k to update: B\n\n### Its params\n\n- id: B\n\n### What it must do\n\nuses #{A}");
+        expect(generator.executed[0]).not.toContain("- errors:");
+    });
+
     test("editing what an instance leans on counts as a change of its spec", async () => {
         const spec = `${SPEC()}${RULE}`.replace("k B { uses #{A} }", "k B { follows #{R} and is a #{k} }");
 
@@ -316,7 +451,8 @@ describe("SlytherInstanceChecker references", () => {
 
         await writeFile(join(root, "main.sly"), spec.replace("be nice", "be kind").replace("rules of k", "the rules of k"));
 
-        expect(statuses(await compile())).toEqual(["k:A kept", "k:B updated (its spec changed)"]);
+        // B leans on the kind, so its spec changed; A is brought in line because the rules it follows did.
+        expect(statuses(await compile())).toEqual(["k:A updated (the rules of its kind changed)", "k:B updated (its spec changed)"]);
         expect(statuses(await compile())).toEqual(["k:A kept", "k:B kept"]);
     });
 });

@@ -7,8 +7,9 @@ export const help = {
 
 Builds the operations of every kind, then checks every instance the scripts declare whose kind has
 operations, without touching the code: locates it in ${SlytherProject.OUTPUT}/${SlytherProject.SOURCE}, and evaluates it
-with the evaluate operation of its kind when it was never evaluated, when its declaration or its code
-changed, when what evaluates it changed, or when an instance it references changed in a way it uses.
+with the evaluate operation of its kind when it was never evaluated, when its declaration, the rules of
+its kind or its code changed, when what evaluates it changed, or when an instance it references changed
+in a way it uses.
 What it finds is recorded in ${SlytherProject.OUTPUT}/${SlytherProject.INSTANCES}, so the next check only evaluates
 what changed. An instance of a composite kind is expanded first, and what it emits is checked under it;
 what its parent no longer emits is reported as an orphan and left alone. Exits 1 when any instance fails

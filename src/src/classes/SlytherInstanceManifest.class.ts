@@ -5,16 +5,22 @@ import { dirname } from "node:path";
 export class SlytherInstanceManifest {
     /** The name of the manifest inside the instances folder. */
     static readonly FILE = "manifest.json";
+    /** What a manifest written by this version records, so an older one can be brought forward on load. */
+    static readonly VERSION = 2;
 
     private constructor(
         /** Where the manifest is written. */
         private readonly path: string,
+        /** The version the manifest on disk was written with: 1 is one written before the rules of a kind were recorded. */
+        readonly version: number,
         /** Every instance checked, keyed by `kind:name`: what deciding to check it again needs. */
         readonly instances: Record<
             string,
             {
                 /** The hash of the artifact that declares the instance and of what it leans on, so a change to its prose, its args or its rules is noticed. */
                 specHash: string;
+                /** The hash of the rules of its kind, so a change to them is noticed by every instance of it. Absent in a manifest written before version 2. */
+                rulesHash?: string;
                 /** The instance whose expand emitted it, when it was not declared by hand. */
                 parent?: string;
                 /** The args locate was run with, when it takes more than the id, so the instance can be found again once its declaration is gone or its args changed. */
@@ -36,9 +42,11 @@ export class SlytherInstanceManifest {
     /** The manifest at the path, or an empty one when there is none yet. */
     static async load(path: string): Promise<SlytherInstanceManifest> {
         try {
-            return new SlytherInstanceManifest(path, JSON.parse(await readFile(path, "utf-8")).instances ?? {});
+            const read = JSON.parse(await readFile(path, "utf-8"));
+
+            return new SlytherInstanceManifest(path, read.version ?? 1, read.instances ?? {});
         } catch {
-            return new SlytherInstanceManifest(path, {});
+            return new SlytherInstanceManifest(path, SlytherInstanceManifest.VERSION, {});
         }
     }
 
@@ -47,6 +55,6 @@ export class SlytherInstanceManifest {
         const sorted = Object.fromEntries(Object.entries(this.instances).sort(([a], [b]) => a.localeCompare(b)));
 
         await mkdir(dirname(this.path), { recursive: true });
-        await writeFile(this.path, `${JSON.stringify({ instances: sorted }, null, 4)}\n`);
+        await writeFile(this.path, `${JSON.stringify({ version: SlytherInstanceManifest.VERSION, instances: sorted }, null, 4)}\n`);
     }
 }

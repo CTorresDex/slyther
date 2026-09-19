@@ -12,10 +12,13 @@ deterministic step, written by the LLM and verified, and a markdown per llm step
 not deterministic. A manifest remembers what every file was built from, so only what changed is built again.
 
 Then it brings every instance the scripts declare in line with its declaration, in ${SlytherProject.OUTPUT}/${SlytherProject.SOURCE}:
-one that is missing is created with the create operation of its kind, one whose declaration changed is
-updated with its update operation, and every one that was never evaluated, or changed, or depends on
-something that changed, is evaluated with its evaluate operation; one that fails is updated with the
-errors and evaluated once more. What it finds is recorded in ${SlytherProject.OUTPUT}/${SlytherProject.INSTANCES}, so
+one that is missing is created with the create operation of its kind, and every one that changed is
+brought in line with its update operation and then evaluated with its evaluate operation, since the
+prose rules over the code and an evaluate only ever covers part of what the prose says. An instance
+changed when its own prose changed, when the rules of its kind changed, when its code was edited by
+hand, when what evaluates it changed, or when something it depends on changed in a way it uses; one
+with no record yet is evaluated as it stands, and one that fails is updated with the errors and
+evaluated once more. What it finds is recorded in ${SlytherProject.OUTPUT}/${SlytherProject.INSTANCES}, so
 the next build only works on what changed. An instance of a composite kind is expanded first, and what it
 emits is built under it; what its parent no longer emits is reported as an orphan and left alone. Exits 1
 when any instance fails or is missing.

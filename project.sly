@@ -3,13 +3,17 @@
 
 class SlytherProject {
     A Slyther project is a folder where the slyther files live. It is created with the root, a
-    #{Build::SlytherGenerator}, where to report progress and the verbose option, which wraps the generator in
-    a #{Build::SlytherTracedGenerator}. It contains the following structure:
+    #{Build::SlytherGenerator}, where to report progress, the verbose option, which wraps the generator in
+    a #{Build::SlytherTracedGenerator}, and the folder its code lives in, `.slyther/src` when none is given.
+    It contains the following structure:
 
     - main.sly: Entry point
     - .slyther: Contains the Slyther output files
-    - .slyther/src: The code of the project. Every script, operation and LLM runs from it, so a `./` read by
-      the code is really `./.slyther/src`, and the paths the rules of a kind give are relative to it
+    - .slyther/src: The code of the project, unless an `@src` line moves it elsewhere, which is why nothing
+      else is ever written next to it. Every script, operation and LLM runs from it, so a `./` read by the
+      code is really that folder, and the paths the rules of a kind give are relative to it. Wherever it
+      sits, whatever runs from it is handed the artifacts folder as the way there from it, never as a fixed
+      `../artifacts`, so moving the code never leaves an operation pointing at nothing
     - .slyther/build
     - .slyther/build/parser.json: The JSON representation of the SlytherScript parsed from main.sly after a build
     - .slyther/artifacts: The operations of every kind as built, see #{Build::SlytherArtifactBuilder}
@@ -20,6 +24,23 @@ class SlytherProject {
 
     .slyther/build is ignored by version control, .slyther/artifacts and .slyther/instances are committed,
     so a checkout runs the operations without building them again and a check evaluates only what changed.
+
+    Its static `of` takes the root and what the constructor takes besides the folder of code, parses the
+    entry point with #{Compiler::SlytherParser} and returns the project pointed at the folder its `@src`
+    declares, keeping the #{Compiler::ParsedSlytherScript} it read so a build does not read it twice. Every
+    command makes its project with it, so the folder a build writes to is the one a run and an operation
+    run from, without either being told where it is: nothing but the scripts ever decides it. It must throw
+    an error when the entry point cannot be read, so a command outside a project says so instead of
+    working on a folder that is not one.
+}
+
+method SlytherProject::init {
+    Initializes a project in the given folder, the current one when none is given, creating whatever part
+    of its structure is missing and never touching what already exists, and returns the project and the
+    paths it created. It creates the entry point and the output folder, and never the folder of code: an
+    empty entry point declares no `@src` yet, so where the code goes is not known until something parses
+    it, and the first build creates it wherever it is by then declared. Since it is what makes a project,
+    it is the one thing that does not go through the static `of` of #{SlytherProject}.
 }
 
 method SlytherProject::build {
@@ -34,7 +55,8 @@ method SlytherProject::build {
 }
 
 method SlytherProject::parse {
-    Uses #{Compiler::SlytherParser} to parse the main.sly file and writes the JSON representation to: .slyther/build/parser.json
+    Writes the JSON representation of the #{Compiler::ParsedSlytherScript} the project was made with to:
+    .slyther/build/parser.json
 }
 
 method SlytherProject::buildArtifacts {
