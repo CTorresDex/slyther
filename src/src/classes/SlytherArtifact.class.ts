@@ -12,7 +12,8 @@ export class SlytherArtifact {
         readonly name: string,
         readonly args: {
             name: string;
-            kind: "string" | "number" | "boolean" | "type";
+            /** A param is a bare name: an operation narrowing to a param its kind declares, with no value of its own. */
+            kind: "string" | "number" | "boolean" | "type" | "param";
             value: string | number | boolean;
             /** Only a type may be optional, written as `type?`. */
             optional?: boolean;

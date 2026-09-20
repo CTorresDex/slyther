@@ -154,6 +154,11 @@ class SlytherArtifactBuilder {
     what it prints must declare what create needs, and the form of a declaration as
     #{Compiler::SlytherExpansion} reads it.
 
+    Whatever is built for an operation of a demanded kind that takes the demands, a script or a markdown,
+    is also told what that param holds: nothing declares an instance of such a kind, so its demands are
+    the whole of what the instance must do, and what they hold is said outright rather than left to the
+    rules of the kind to mention.
+
     Every #{Compiler::SlytherRunScript} it is given gets a folder `@run/name`, which no kind can take, holding
     a script per step, built after every operation so it may run them. The input hash of a step of a
     script is the hash of its closure hash, the scope hash of its script, its lang and its path. It is

@@ -19,7 +19,7 @@ describe("SlytherLanguageService", () => {
         service = new SlytherLanguageService({ get: (path) => open.get(path) });
 
         await writeFile(main, ['@lang "ts"', '@import "./other.sly"', "@use App", "", "class Users {", "  Keeps every user, see #{Store}", "}", "method Users::save { writes #{Users} }", "class Store (kind: Users) { x }"].join("\n"));
-        await writeFile(other, ["@artifact class {", "  operation locate (id: string): deterministic { find it }", "  operation list {", "    deterministic go { x }", "  }", "}", "@artifact method"].join("\n"));
+        await writeFile(other, ["@artifact class (kind: string) {", "  operation locate: deterministic { find it }", "  operation list {", "    deterministic go { x }", "  }", "}", "@artifact method"].join("\n"));
     });
 
     afterEach(async () => {
@@ -64,7 +64,7 @@ describe("SlytherLanguageService", () => {
 
     test("describes what is hovered", () => {
         expect(service.hover(main, 8, 8)).toEqual({ markdown: "```slyther\nclass App::Store (kind: Users)\n```\n\nx", start: 6, end: 11 });
-        expect(service.hover(other, 1, 14)?.markdown).toBe("```slyther\noperation class::locate (id: string) : deterministic\n```\n\nfind it");
+        expect(service.hover(other, 1, 14)?.markdown).toBe("```slyther\noperation class::locate : deterministic\n```\n\nfind it");
         expect(service.hover(main, 1, 12)).toEqual({ markdown: `\`${other}\``, start: 9, end: 20 });
         expect(service.hover(main, 5, 3)).toBeUndefined();
     });
@@ -90,6 +90,8 @@ describe("SlytherLanguageService", () => {
         expect(service.completions(main, 10, "class X (a: string): d").map((item) => item.label)).toEqual(["deterministic"]);
         expect(service.completions(main, 10, "class X (a: ").slice(0, 4).map((item) => item.label)).toEqual(["string", "number", "boolean", "App"]);
         expect(service.completions(main, 10, "@use A").map((item) => item.label)).toEqual(["App"]);
+        expect(service.completions(other, 1, "  operation create (").map((item) => `${item.label}: ${item.detail}`)).toEqual(["id: string", "kind: string"]);
+        expect(service.completions(other, 1, "  operation update (id, ").map((item) => item.label)).toEqual(["kind", "errors"]);
         expect(service.completions(main, 5, "  prose here")).toEqual([]);
     });
 
@@ -116,7 +118,7 @@ describe("SlytherLanguageService", () => {
             { file: other, line: 2, start: 12, end: 16, message: 'Operation "class::list" has only deterministic steps: qualify it as deterministic.', severity: "warning" },
         ]);
 
-        open.set(other, "@artifact class {\n  operation create (id: string) { make }\n}\n@artifact method");
+        open.set(other, "@artifact class {\n  operation create { make }\n}\n@artifact method");
         service.invalidate();
 
         expect(service.diagnostics(other).map((diagnostic) => `${diagnostic.severity} ${diagnostic.line}:${diagnostic.start}-${diagnostic.end}`)).toEqual(["error 0:10-15"]);

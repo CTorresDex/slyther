@@ -50,6 +50,56 @@ describe("SlytherParser qualifiers", () => {
     });
 });
 
+describe("SlytherParser artifact args", () => {
+    test("a kind takes its params in the first parens and its configuration in the second", () => {
+        expect(find('@artifact k (a: string, b: number?) (lang: "ts") { rules }', "k").args).toEqual([
+            { name: "a", kind: "type", value: "string" },
+            { name: "b", kind: "type", value: "number", optional: true },
+            { name: "lang", kind: "string", value: "ts" },
+        ]);
+    });
+
+    test("a single parens holds either, decided by what it writes", () => {
+        expect(find('@artifact k (lang: "ts") { rules }', "k").args).toEqual([{ name: "lang", kind: "string", value: "ts" }]);
+        expect(find("@artifact k (a: string) { rules }", "k").args).toEqual([{ name: "a", kind: "type", value: "string" }]);
+    });
+
+    test("throws when the parens are mixed up", () => {
+        expect(() => parse('@artifact k (a: string, lang: "ts") { rules }')).toThrow(
+            'The kind "k" declared with @artifact takes its params and its configuration in separate parens.',
+        );
+        expect(() => parse('@artifact k (lang: "ts") (a: string) { rules }')).toThrow(
+            'The kind "k" declared with @artifact takes its params in the first parens and its configuration in the second.',
+        );
+    });
+
+    test("a kind may declare its params and still take its prose from a file", async () => {
+        const folder = await mkdtemp(join(tmpdir(), "slyther-args-"));
+
+        await writeFile(join(folder, "rules.md"), "the rules");
+
+        const kind = new SlytherParser().parse(new SlytherScript('@artifact k (a: string) ref "./rules.md"', join(folder, "main.sly")), folder).artifacts[0]!;
+
+        expect(kind.args).toEqual([{ name: "a", kind: "type", value: "string" }]);
+        expect(kind.source?.mode).toBe("ref");
+
+        await rm(folder, { recursive: true, force: true });
+    });
+
+    test("a bare name is a param an operation narrows to, and only an operation may write one", () => {
+        expect(find("@artifact k {\n operation create (id, a) { x }\n}", "k::create").args).toEqual([
+            { name: "id", kind: "param", value: "" },
+            { name: "a", kind: "param", value: "" },
+        ]);
+        expect(() => parse("@artifact k (a) { rules }")).toThrow(
+            'Argument "a" of "k" has no value: only an operation writes a bare name, to narrow to the params of its kind.',
+        );
+        expect(() => parse("@artifact k {\n operation create {\n  deterministic go (a) { x }\n }\n}")).toThrow(
+            'Argument "a" of "k::create::go" has no value: only an operation writes a bare name, to narrow to the params of its kind.',
+        );
+    });
+});
+
 describe("SlytherParser extend", () => {
     const script = "@artifact k\nk P { the p }";
     const parent = () => find(script, "P");

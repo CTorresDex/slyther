@@ -45,14 +45,14 @@ const SCRIPTS = {
     "k/create/scaffold.sh": 'echo "scaffold $1 $2"',
 };
 const SPEC = (step = "makes the file") => `@lang "sh"
-@artifact k {
+@artifact k (content: string) {
     rules of k
-    operation locate (id: string): deterministic { prints src/{id}.txt }
-    operation create (id: string, content: string) {
+    operation locate: deterministic { prints src/{id}.txt }
+    operation create {
         deterministic scaffold { ${step} }
         llm fill { fills the file }
     }
-    operation evaluate (id: string) {
+    operation evaluate (id) {
         llm check { checks the file }
     }
 }${INSTANCES}`;
@@ -163,7 +163,7 @@ describe("SlytherArtifactBuilder", () => {
 
         const report = await build(
             new FakeGenerator(SCRIPTS),
-            `@lang "sh"\n@artifact k {\n rules of k\n operation locate (id: string): deterministic { prints src/{id}.txt }\n}${INSTANCES}`,
+            `@lang "sh"\n@artifact k {\n rules of k\n operation locate: deterministic { prints src/{id}.txt }\n}${INSTANCES}`,
         );
 
         expect(report.filter((entry) => entry.status === "removed").map((entry) => entry.path).sort()).toEqual([
@@ -236,13 +236,13 @@ describe("SlytherArtifactBuilder ref", () => {
             }
         })(SCRIPTS);
         const spec = `@lang "sh"
-@artifact k ref "./rules.md"
-operation k::locate (id: string): deterministic { prints src/{id}.txt }
-operation k::create (id: string, content: string) {
+@artifact k (content: string) ref "./rules.md"
+operation k::locate: deterministic { prints src/{id}.txt }
+operation k::create {
     deterministic scaffold ref "./scaffold.md"
     llm fill { fills the file }
 }
-operation k::evaluate (id: string) { checks the file }`;
+operation k::evaluate (id) { checks the file }`;
         const kinds = SlytherArtifactKind.of(new SlytherParser().parse(new SlytherScript(spec, join(root, "main.sly")), root));
 
         await new SlytherArtifactBuilder(root, ARTIFACTS, generator).build(kinds);
@@ -258,9 +258,9 @@ operation k::evaluate (id: string) { checks the file }`;
 
 describe("SlytherArtifactBuilder expand", () => {
     const COMPOSITE = `${SPEC()}
-@artifact c {
+@artifact c (parts: string) {
     a composite
-    operation expand (id: string, parts: string): deterministic { prints a #{k} per part }
+    operation expand: deterministic { prints a #{k} per part }
 }`;
     const EXPAND = { "c/expand/expand.sh": 'for part in $2; do echo "k $part { the $part }"; done' };
 
@@ -280,7 +280,7 @@ describe("SlytherArtifactBuilder expand", () => {
         expect(report.map((entry) => entry.path)).toContain("c/expand/expand.sh");
         expect(prompt).toContain("## What it prints");
         expect(prompt).toContain("`endpoint create` printed for `Users` declares `Users::create`");
-        expect(prompt).toContain("### k, whose create needs content (string)\n\nrules of k");
+        expect(prompt).toContain("### k, which takes content (string)\n\nrules of k");
         expect((await manifest()).operations["c::expand"].params.map((param: { name: string }) => param.name)).toEqual(["id", "parts"]);
     });
 

@@ -4,19 +4,19 @@ import { SlytherExpansion } from "../src/classes/SlytherExpansion.class.ts";
 import { SlytherParser } from "../src/classes/SlytherParser.class.ts";
 import { SlytherScript } from "../src/classes/SlytherScript.class.ts";
 
-const K = `@artifact k {
-    operation locate (id: string): deterministic { finds it }
-    operation create (id: string, content: string, extra: string?): deterministic { makes it }
-    operation evaluate (id: string): deterministic { checks it }
+const K = `@artifact k (content: string, extra: string?) {
+    operation locate: deterministic { finds it }
+    operation create: deterministic { makes it }
+    operation evaluate: deterministic { checks it }
 }`;
 const SPEC = `@lang "sh"
 ${K}
 @artifact plain { rules only }
 @artifact c {
-    operation expand (id: string): deterministic { emits a #{k} }
+    operation expand: deterministic { emits a #{k} }
 }
 @artifact d {
-    operation expand (id: string): deterministic { emits a #{c} or a #{plain} }
+    operation expand: deterministic { emits a #{c} or a #{plain} }
 }
 c P { the p }
 d Q { the q }
@@ -54,6 +54,14 @@ describe("SlytherExpansion", () => {
         );
         expect(() => SlytherExpansion.of("c one { x }", Q, kinds, parsed)).toThrow('d:Q emitted the c "Q::one", but c is composite: a composite kind cannot emit another.');
         expect(() => SlytherExpansion.of("plain one { x }", Q, kinds, parsed)).toThrow('d:Q emitted the plain "Q::one", but a plain cannot be created: it has no create operation.');
+    });
+
+    test("throws when a declaration gives an arg its kind does not declare", () => {
+        const { parsed, kinds, P } = setup();
+
+        expect(() => SlytherExpansion.of('k uno (nope: "x") { the uno }', P, kinds, parsed)).toThrow(
+            'c:P emitted the k "P::uno" with the arg "nope", which k does not declare: it takes content, extra.',
+        );
     });
 
     test("throws when a declaration gives nothing for a param its create needs", () => {

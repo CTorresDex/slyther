@@ -67,24 +67,51 @@ class SlytherArtifactKind {
     - artifact: The #{SlytherArtifact} of the kind itself, whose content is the rules of the kind
     - closureHash: The closure hash of the kind, so it changes whenever its rules or any of its operations do
     - scopeHash: The scope hash of the kind, so it changes whenever its rules do but not when an operation does
-    - lang: The language of the kind, if its args declare one
+    - lang: The language of the kind, if its configuration declares one
+    - params: The shape of every instance of the kind: the params its operations are run with, as
+      `name: type` pairs in the order written, after the implicit id
     - operations: Every operation of the kind in the order written, each with its #{SlytherArtifact},
       its closure hash, its scope hash, its params, whether it is deterministic, whether it is built in,
       and its steps, and each step with its #{SlytherArtifact}, its closure hash and, when it is
       deterministic, its lang. A step is of kind llm or deterministic
     - warnings: The warnings found while grouping the kind, in the order found
 
-    The args of an operation are its params: the signature it receives when it runs, as `name: type`
-    pairs, so every value must be a type, otherwise it must throw an error. A step declares no params,
-    it receives the params of its operation, and a type as a step arg must throw an error. The args of a
-    kind and of a step are configuration, and the only configuration is lang: any other must throw an
-    error, and so must lang on an llm step.
+    The params of every operation are declared once, by the kind, since what an operation is run with is
+    the instance it is run on and never something of its own: the first args of the kind are its params,
+    as `name: type` pairs, and they are the shape every instance of it has. Two params are implicit and
+    may not be declared: id, the name of the instance, which comes first and is always there, and errors,
+    what an update is run to fix, which comes last and only update has. A demanded kind has a third,
+    demands, what the artifacts that use an instance ask of it, which follows the id. A param named as an
+    arg of an instance is that arg, and any other is its prose, unless it is optional and the instance
+    gave no arg for it, see #{Check::SlytherInstanceChecker}.
+
+    An operation declares no types of its own, so a type in its args must throw an error, saying the
+    params of a kind are declared on the kind. Written without args, an operation takes every param of
+    its kind, which is the whole point of declaring them once. The operations Slyther runs itself are the
+    exception and keep their shape, whether they are declared by hand or added as a
+    #{SlytherBuiltinOperation}: list takes nothing, since it ranges over every instance rather than one,
+    and locate, signature and uses take the id alone. What locate was run with is what finds an instance
+    again, so a param that does not say where the artifact is would move it for nothing, see
+    #{Check::SlytherInstanceManifest}.
+
+    Written with args, an operation narrows to the params it names, as bare names in the order it wants
+    them, which is also how a locate asks for more than the id when the id alone does not say where the
+    artifact is. A name that is not a param of the kind, nor id, nor errors on an update, must throw an
+    error, and so must a name written twice.
+
+    An instance may only give args the kind declares as params: any other must throw an error, naming the
+    instance and what the kind takes, since an arg nothing reads is a typo that would otherwise be lost.
+
+    The args of a kind after its params, and the args of a step, are configuration, and the only
+    configuration is lang: any other must throw an error, and so must lang on an llm step. A step declares
+    no params, it receives the params of its operation, and a type as a step arg must throw an error.
 
     The lang of a deterministic step is the one its args declare, else the one of its kind, else the one
     of the #{ParsedSlytherScript}, and when none declares it, it must throw an error.
 
-    The only qualifier is deterministic, and only an operation may have it: any other qualifier, or a
-    qualifier on anything else, must throw an error. A deterministic operation runs as a plain script and
+    The qualifiers are deterministic, which only an operation may have, and demanded, which only a kind
+    may have: any other qualifier, or one written on anything else, must throw an error. A deterministic
+    operation runs as a plain script and
     never with an llm, so it must throw an error when it contains an llm step, and when it has no steps its
     content is its only step, a deterministic step named after the operation. Likewise, an operation that
     is not deterministic and has no steps has its content as its only step, an llm step named after the
@@ -96,9 +123,17 @@ class SlytherArtifactKind {
     error when an operation is not declared inside a kind, when a step is not declared inside an
     operation, when an operation that is not deterministic has neither steps nor content, or when a kind has a create
     or update operation but no evaluate operation to verify them with, or when a kind that is not
-    composite has operations but no locate operation, or its locate operation is not deterministic, or
-    its first param is not `id: string`. A kind with no operations is allowed: it is declared but
-    not yet defined.
+    composite has operations but no locate operation, or its locate operation is not deterministic or
+    does not take the id first. A kind with no operations is allowed: it is declared but not yet defined.
+
+    A kind qualified as demanded has instances nobody declares: one exists because the uses of another
+    artifact named it, and what is asked of it is the whole of its spec, see
+    #{Check::SlytherInstanceChecker}. So it must define a create operation, since an instance of it could
+    never be made otherwise; it must not be composite, since an instance with no code of its own can never
+    be asked for a member; its locate must take the id alone, since a demand names an instance and nothing
+    else, and there is no declaration to fill anything more from; and every param it declares must be
+    optional, for the same reason. Each of these must throw an error. It is declared by hand as any other
+    kind: what is demanded is its instances, never the kind itself.
 
     A kind with an expand operation is composite: an instance of it has no code of its own, only the
     instances its expand emits, as declarations it prints, see #{SlytherExpansion}. So expand must be
@@ -110,7 +145,8 @@ class SlytherArtifactKind {
     The locate operation is how every other operation finds an artifact of the kind: given its id, and
     whatever else its params ask of the instance, it prints where the artifact is and exits 0, or prints
     nothing and exits 1 when it does not exist. It takes the id first, so an instance is always named to
-    it, and may take more params when the id alone does not say where the artifact is: they are filled
+    it, and takes nothing else unless it names it, since the id alone is what usually says where the
+    artifact is: a kind whose locate needs more narrows to the params it needs, and they are filled
     from the instance as the params of create are. An
     artifact may be spread over several files, so it prints one segment per line: a path, for a whole
     file or a whole folder, `path:start-end`, for the lines of a file from start to end, both inclusive
@@ -129,7 +165,10 @@ class SlytherBuiltinOperation {
     closure hash and scope hash are its own hash. Every kind with operations has list; signature and uses
     only serve to decide whether the artifacts that reference an instance of the kind must be evaluated
     again, so a kind only has them once some artifact references one of its instances, other than
-    itself, and a kind nobody references is not asked for them. They are:
+    itself, and a kind nobody references is not asked for them. Two more are asked for them whatever
+    references them: a demanded kind, since nothing ever references one of its instances by name, and a
+    kind whose rules, operations or steps reference a demanded kind, since an instance of it may ask for
+    one and only its uses can say what it asked for. They are:
 
     - list (): Prints the id of every artifact of the kind that exists, one per line, and exits 0
     - signature (id: string): Prints the public shape of the artifact, one member per line as `key shape`,
@@ -219,11 +258,20 @@ class SlytherParser {
     that declares it, as an import is, and when no script declares it the project keeps its default.
     Writing it twice, in any script, must throw an error.
 
-    An `@artifact Name (args) { rules }` line declares a kind, as an artifact of the built-in kind artifact,
-    and is the only way to make it available: a declaration of a kind that was not declared before it
-    must throw an error, and so must writing a kind as a plain `artifact Name` declaration. The braces
-    are optional, and a kind is always declared globally, whatever `@use` is in effect. The built-in
+    An `@artifact Name (params) (config) { rules }` line declares a kind, as an artifact of the built-in
+    kind artifact, and is the only way to make it available: a declaration of a kind that was not declared
+    before it must throw an error, and so must writing a kind as a plain `artifact Name` declaration. The
+    braces are optional, and a kind is always declared globally, whatever `@use` is in effect. The built-in
     kinds are namespace, operation, llm and deterministic.
+
+    Both parens are optional, and they are read as a `@run` reads its own: when there is only one, it holds
+    the params when it declares a type and the configuration otherwise, and when there are two, a type in
+    the second or a value in the first must throw an error. The params are kept before the configuration,
+    so whoever reads the args back tells them apart by what they hold, see #{SlytherArtifactKind}.
+
+    An arg written as a bare name, with no value, is a param of the kind an operation narrows to. It is
+    only meaningful where params are declared elsewhere, so a bare name anywhere but the args of an
+    operation must throw an error.
 
     A body may nest blocks, and a nested block is sugar for a `Parent::child` name: an artifact may
     contain operation blocks, an operation may contain llm and deterministic blocks, and no other

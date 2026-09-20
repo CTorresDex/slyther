@@ -4,7 +4,7 @@ import { SlytherParser } from "../src/classes/SlytherParser.class.ts";
 import { SlytherScript } from "../src/classes/SlytherScript.class.ts";
 
 const kinds = (source: string) => SlytherArtifactKind.of(new SlytherParser().parse(new SlytherScript(`@lang "ts"\n${source}`)));
-const LOCATE = "operation locate (id: string): deterministic { finds it }";
+const LOCATE = "operation locate: deterministic { finds it }";
 
 describe("SlytherArtifactKind deterministic operations", () => {
     test("a deterministic operation without steps has its content as its only step", () => {
@@ -55,21 +55,21 @@ describe("SlytherArtifactKind deterministic operations", () => {
 });
 
 describe("SlytherArtifactKind qualifiers", () => {
-    test("throws when a kind is qualified", () => {
+    test("throws when a kind is qualified as deterministic, which only an operation may be", () => {
         expect(() => kinds(`@artifact k: deterministic {\n ${LOCATE}\n}`)).toThrow(
-            '"k" cannot be qualified: only an operation may be, as deterministic.',
+            'Unknown qualifier "deterministic" of "k": the only qualifier of a kind is demanded.',
         );
     });
 
     test("throws when a step is qualified", () => {
         expect(() =>
             kinds(`@artifact k {\n ${LOCATE}\n operation evaluate {\n llm check: deterministic { x }\n }\n}`),
-        ).toThrow('"k::evaluate::check" cannot be qualified: only an operation may be, as deterministic.');
+        ).toThrow('"k::evaluate::check" cannot be qualified: only a kind may be, as demanded, and an operation, as deterministic.');
     });
 
     test("throws on an unknown qualifier", () => {
         expect(() => kinds("@artifact k {\n operation locate: fast { x }\n}")).toThrow(
-            'Unknown qualifier "fast" of "k::locate": the only qualifier is deterministic.',
+            'Unknown qualifier "fast" of "k::locate": the only qualifier of an operation is deterministic.',
         );
     });
 });
@@ -96,7 +96,7 @@ describe("SlytherArtifactKind locate", () => {
 });
 
 describe("SlytherArtifactKind composite", () => {
-    const COMPOSITE = `@artifact k {\n ${LOCATE}\n}\n@artifact c {\n operation expand (id: string): deterministic { emits a #{k} }\n}`;
+    const COMPOSITE = `@artifact k {\n ${LOCATE}\n}\n@artifact c {\n operation expand: deterministic { emits a #{k} }\n}`;
 
     test("a kind with expand is composite: it needs no locate, gets no built-in operation, and emits the kinds expand references", () => {
         const c = kinds(COMPOSITE).find((kind) => kind.name === "c")!;
@@ -108,9 +108,92 @@ describe("SlytherArtifactKind composite", () => {
     });
 
     test("throws when expand is not deterministic or the kind defines anything else", () => {
-        expect(() => kinds("@artifact c {\n operation expand (id: string) { emits }\n}")).toThrow('Operation "c::expand" must be deterministic.');
-        expect(() => kinds(`@artifact c {\n ${LOCATE}\n operation expand (id: string): deterministic { emits }\n}`)).toThrow(
+        expect(() => kinds("@artifact c {\n operation expand { emits }\n}")).toThrow('Operation "c::expand" must be deterministic.');
+        expect(() => kinds(`@artifact c {\n ${LOCATE}\n operation expand: deterministic { emits }\n}`)).toThrow(
             'Kind "c" is composite, since it defines expand, so it cannot define "locate": an instance of it has no code of its own.',
         );
+    });
+});
+
+describe("SlytherArtifactKind demanded kinds", () => {
+    const DEMANDED = `@artifact u: demanded {
+ ${LOCATE}
+ operation create { writes it }
+ operation evaluate { checks it }
+}`;
+
+    test("a kind qualified as demanded is demanded, and every other is not", () => {
+        const [kind] = kinds(DEMANDED);
+
+        expect(kind!.demanded).toBe(true);
+        expect(kinds(`@artifact k {\n ${LOCATE}\n}`)[0]!.demanded).toBe(false);
+    });
+
+    test("every operation of a demanded kind takes the demands after the id", () => {
+        const [kind] = kinds(DEMANDED);
+
+        expect(kind!.operation("create")!.params.map((param) => param.name)).toEqual(["id", "demands"]);
+        expect(kind!.operation("evaluate")!.params.map((param) => param.name)).toEqual(["id", "demands"]);
+    });
+
+    test("the read-only operations of a demanded kind keep their shape", () => {
+        const [kind] = kinds(DEMANDED);
+
+        expect(kind!.operation("locate")!.params.map((param) => param.name)).toEqual(["id"]);
+        expect(kind!.operation("uses")!.params.map((param) => param.name)).toEqual(["id"]);
+        expect(kind!.operation("list")!.params).toEqual([]);
+    });
+
+    test("a demanded kind is always built a signature and a uses, since nothing references its instances", () => {
+        const [kind] = kinds(DEMANDED);
+
+        expect(kind!.operations.map((operation) => operation.artifact.name)).toContain("u::signature");
+        expect(kind!.operations.map((operation) => operation.artifact.name)).toContain("u::uses");
+    });
+
+    test("a kind whose rules reference a demanded kind is built a uses, since only it can name what it asked for", () => {
+        const [, asker] = kinds(`${DEMANDED}\n@artifact k {\n its utilities live in a #{u}\n ${LOCATE}\n}`);
+
+        expect(asker!.operations.map((operation) => operation.artifact.name)).toContain("k::uses");
+    });
+
+    test("a kind that references no demanded kind, and that nothing references, is built neither", () => {
+        const [kind] = kinds(`@artifact k {\n ${LOCATE}\n}`);
+
+        expect(kind!.operations.map((operation) => operation.artifact.name)).not.toContain("k::uses");
+    });
+
+    test("throws when a demanded kind has no create, since an instance of it could never be made", () => {
+        expect(() => kinds(`@artifact u: demanded {\n ${LOCATE}\n}`)).toThrow(
+            'Kind "u" is demanded but defines no create operation: an instance of it could never be made.',
+        );
+    });
+
+    test("throws when a demanded kind is composite", () => {
+        expect(() => kinds("@artifact u: demanded {\n operation expand: deterministic { emits }\n}")).toThrow(
+            'Kind "u" is demanded and composite: an instance with no code of its own can never be asked for a member.',
+        );
+    });
+
+    test("throws when the locate of a demanded kind takes more than the id", () => {
+        expect(() =>
+            kinds(`@artifact u (where: string?): demanded {\n operation locate (id, where): deterministic { finds it }\n operation create { writes it }\n operation evaluate { checks it }\n}`),
+        ).toThrow(
+            'Operation "u::locate" takes id, where, but "u" is demanded: it must take the id alone, since a demand names an instance and nothing else.',
+        );
+    });
+
+    test("throws when a demanded kind declares a param that is not optional", () => {
+        expect(() =>
+            kinds(`@artifact u (spec: string): demanded {\n ${LOCATE}\n operation create { writes it }\n operation evaluate { checks it }\n}`),
+        ).toThrow(
+            'Kind "u" is demanded and declares the param "spec", which is not optional: an instance nobody declares has nothing to fill it from, so every param of a demanded kind must be optional.',
+        );
+    });
+
+    test("a demanded kind may declare an optional param, which an instance nobody declares simply has not", () => {
+        const [kind] = kinds(`@artifact u (spec: string?): demanded {\n ${LOCATE}\n operation create { writes it }\n operation evaluate { checks it }\n}`);
+
+        expect(kind!.operation("create")!.params.map((param) => param.name)).toEqual(["id", "demands", "spec"]);
     });
 });

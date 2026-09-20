@@ -35,6 +35,7 @@ export class SlytherLanguageServer {
         kind: CompletionItemKind.Class,
         qualifier: CompletionItemKind.Keyword,
         type: CompletionItemKind.TypeParameter,
+        param: CompletionItemKind.Variable,
         namespace: CompletionItemKind.Module,
         directive: CompletionItemKind.Keyword,
     };

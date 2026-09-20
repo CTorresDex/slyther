@@ -48,15 +48,15 @@ const SCRIPTS = {
     "k/update/fix.sh": 'sed -i "" "s/BAD/GOOD/" "src/$1.txt"',
     "k/create/make.sh": 'printf "%s\\n" "$2" > "src/$1.txt"',
 };
-const SPEC = (evaluate = "operation evaluate (id: string): deterministic {\n deterministic check { fails on BAD }\n }") => `@lang "sh"
-@artifact k {
+const SPEC = (evaluate = "operation evaluate (id): deterministic {\n deterministic check { fails on BAD }\n }") => `@lang "sh"
+@artifact k (requirements: string, kind: string?) {
     rules of k
-    operation locate (id: string): deterministic { prints src/{id}.txt }
+    operation locate: deterministic { prints src/{id}.txt }
     ${evaluate}
-    operation update (id: string, errors: string): deterministic {
+    operation update (id, errors): deterministic {
         deterministic fix { replaces BAD }
     }
-    operation create (id: string, requirements: string): deterministic {
+    operation create (id, requirements): deterministic {
         deterministic make { writes the requirements }
     }
 }
@@ -260,7 +260,7 @@ describe("SlytherInstanceChecker", () => {
         expect(await read("B.txt")).toBe("GOOD at first\n");
 
         await rm(join(code(), "B.txt"));
-        await writeFile(join(root, "main.sly"), SPEC().replace("    operation create (id: string, requirements: string): deterministic {\n        deterministic make { writes the requirements }\n    }\n", "").replace("k B { uses #{A} }", "k B { BAD at first }"));
+        await writeFile(join(root, "main.sly"), SPEC().replace("    operation create (id, requirements): deterministic {\n        deterministic make { writes the requirements }\n    }\n", "").replace("k B { uses #{A} }", "k B { BAD at first }"));
 
         expect(statuses(await compile())).toEqual(["k:A kept", "k:B missing"]);
     });
@@ -273,7 +273,7 @@ describe("SlytherInstanceChecker", () => {
     });
 
     test("the llm evaluates against the declaration of the instance", async () => {
-        await writeFile(join(root, "main.sly"), SPEC("operation evaluate (id: string) {\n llm verify { judge it }\n }").replace("k A { the a }", 'k A (kind: "helper") { the a }'));
+        await writeFile(join(root, "main.sly"), SPEC("operation evaluate (id) {\n llm verify { judge it }\n }").replace("k A { the a }", 'k A (kind: "helper") { the a }'));
 
         const generator = new FakeGenerator(SCRIPTS);
 
@@ -283,7 +283,7 @@ describe("SlytherInstanceChecker", () => {
     });
 
     test("evaluates with the llm when evaluate has an llm step, and refuses more than --max", async () => {
-        await writeFile(join(root, "main.sly"), SPEC("operation evaluate (id: string) {\n llm verify { judge it }\n }"));
+        await writeFile(join(root, "main.sly"), SPEC("operation evaluate (id) {\n llm verify { judge it }\n }"));
 
         const generator = new FakeGenerator(SCRIPTS, { pass: false, errors: ["not good"] });
 
@@ -379,7 +379,7 @@ describe("SlytherInstanceChecker brings what changed in line", () => {
 });
 
 describe("SlytherInstanceChecker references", () => {
-    const LLM = "operation evaluate (id: string) {\n llm verify { judge it }\n }";
+    const LLM = "operation evaluate (id) {\n llm verify { judge it }\n }";
     const RULE = "\n@artifact rule\nrule R { be nice }";
 
     test("the llm receives what the instance references: the rules of a kind, the prose of a plain artifact, and an instance with its signature", async () => {
@@ -399,7 +399,7 @@ describe("SlytherInstanceChecker references", () => {
         await rm(join(code(), "B.txt"));
         await writeFile(
             join(root, "main.sly"),
-            SPEC().replace("    operation create (id: string, requirements: string): deterministic {\n        deterministic make { writes the requirements }\n    }\n", "    operation create (id: string, requirements: string) {\n        llm write { writes it }\n    }\n"),
+            SPEC().replace("    operation create (id, requirements): deterministic {\n        deterministic make { writes the requirements }\n    }\n", "    operation create (id, requirements) {\n        llm write { writes it }\n    }\n"),
         );
 
         const generator = new FakeGenerator(SCRIPTS);
@@ -413,7 +413,7 @@ describe("SlytherInstanceChecker references", () => {
         await rm(join(code(), "B.txt"));
         await writeFile(
             join(root, "main.sly"),
-            SPEC().replace("    operation create (id: string, requirements: string): deterministic {\n        deterministic make { writes the requirements }\n    }\n", "    operation create (id: string, requirements: string) {\n        llm write { writes it }\n    }\n"),
+            SPEC().replace("    operation create (id, requirements): deterministic {\n        deterministic make { writes the requirements }\n    }\n", "    operation create (id, requirements) {\n        llm write { writes it }\n    }\n"),
         );
 
         const generator = new FakeGenerator(SCRIPTS);
@@ -426,7 +426,7 @@ describe("SlytherInstanceChecker references", () => {
     test("an llm update is told which instance it is run on, and the errors stay in their own section", async () => {
         await writeFile(
             join(root, "main.sly"),
-            SPEC().replace("    operation update (id: string, errors: string): deterministic {\n        deterministic fix { replaces BAD }\n    }\n", "    operation update (id: string, errors: string) {\n        llm mend { mends it }\n    }\n"),
+            SPEC().replace("    operation update (id, errors): deterministic {\n        deterministic fix { replaces BAD }\n    }\n", "    operation update (id, errors) {\n        llm mend { mends it }\n    }\n"),
         );
         await compile();
         await write("B.txt", "edited by hand\n");
@@ -439,9 +439,9 @@ describe("SlytherInstanceChecker references", () => {
         expect(generator.executed[0]).not.toContain("- errors:");
     });
 
-    const MENDING = '    operation update (id: string, errors: string) {\n        llm mend { mends it }\n    }\n';
+    const MENDING = '    operation update (id, errors) {\n        llm mend { mends it }\n    }\n';
     const mending = (spec: string) =>
-        spec.replace("    operation update (id: string, errors: string): deterministic {\n        deterministic fix { replaces BAD }\n    }\n", MENDING);
+        spec.replace("    operation update (id, errors): deterministic {\n        deterministic fix { replaces BAD }\n    }\n", MENDING);
 
     test("an llm update is told what changed in the declaration, as a diff against what it was last brought in line with", async () => {
         await writeFile(join(root, "main.sly"), mending(SPEC()));
@@ -518,9 +518,9 @@ describe("SlytherInstanceChecker references", () => {
 
 describe("SlytherInstanceChecker composite", () => {
     const COMPOSITE = (parts = "one two", prose = "the p") => `${SPEC()}
-@artifact c {
+@artifact c (parts: string) {
     a composite
-    operation expand (id: string, parts: string): deterministic { prints a #{k} per part }
+    operation expand: deterministic { prints a #{k} per part }
 }
 c P (parts: "${parts}") { ${prose} }`;
     const EXPAND = { ...SCRIPTS, "c/expand/expand.sh": 'for part in $2; do echo "k $part { the $part }"; done' };
@@ -606,14 +606,44 @@ c P (parts: "${parts}") { ${prose} }`;
     });
 });
 
+describe("SlytherInstanceChecker params of the kind", () => {
+    /** A kind whose operations name no params, so each is run with everything the kind declares. */
+    const EVERY = `@lang "sh"
+@artifact w (requirements: string, tone: string?) {
+    rules of w
+    operation locate: deterministic { prints src/{id}.txt }
+    operation evaluate: deterministic { accepts anything }
+    operation create: deterministic {
+        deterministic write { writes every param it is given }
+    }
+}
+w One (tone: "loud") { the one }
+w Two { the two }`;
+    const EVERY_SCRIPTS = {
+        ...SCRIPTS,
+        "w/locate/locate.sh": '[ -f "src/$1.txt" ] || exit 1; echo "src/$1.txt"',
+        "w/list/list.sh": "true",
+        "w/evaluate/evaluate.sh": "exit 0",
+        "w/create/write.sh": 'printf "%s|%s\\n" "$2" "$3" > "src/$1.txt"',
+    };
+
+    test("an operation that names no params is run with every param of its kind, and an optional one the instance omits is empty", async () => {
+        await writeFile(join(root, "main.sly"), EVERY);
+        await project(new FakeGenerator(EVERY_SCRIPTS)).build();
+
+        expect(await read("One.txt")).toBe("the one|loud\n");
+        expect(await read("Two.txt")).toBe("the two|\n");
+    });
+});
+
 describe("SlytherInstanceChecker locate with params", () => {
     /** A kind whose id does not say where its instances are: the path is an arg of the instance. */
     const AT = (path = "src/docs/a.md") => `${SPEC()}
-@artifact p {
+@artifact p (path: string, requirements: string) {
     rules of p
-    operation locate (id: string, path: string): deterministic { prints the path }
-    operation evaluate (id: string, path: string): deterministic { accepts anything }
-    operation create (id: string, path: string, requirements: string): deterministic {
+    operation locate (id, path): deterministic { prints the path }
+    operation evaluate (id, path): deterministic { accepts anything }
+    operation create (id, path, requirements): deterministic {
         deterministic write { writes the requirements at the path }
     }
 }

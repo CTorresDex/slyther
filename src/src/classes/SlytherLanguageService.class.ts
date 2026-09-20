@@ -23,6 +23,8 @@ export class SlytherLanguageService {
     private static readonly QUALIFIER = /^\s*@?[A-Za-z_][\w-]*\s+[A-Za-z_][\w:-]*\s*(?:\([^)]*\))?\s*:\s*(?:[A-Za-z_][\w-]*\s*,\s*)*([A-Za-z_][\w-]*)?$/;
     /** `kind name (arg: partial` up to the cursor: the type of an arg being written. */
     private static readonly TYPE = /\([^)]*?[A-Za-z_][\w-]*\s*:\s*([A-Za-z_][\w:-]*)?$/;
+    /** `operation name (a, partial` up to the cursor: a param an operation is narrowing to. */
+    private static readonly PARAM = /^\s*operation\s+[A-Za-z_][\w:-]*\s*\((?:[^):]*,)?\s*([A-Za-z_][\w-]*)?$/;
     /** `@use partial` up to the cursor. */
     private static readonly USE = /^\s*@use\s+([A-Za-z_][\w:-]*)?$/;
     /** Only whitespace, or a word after it, up to the cursor: a line that may open a block. */
@@ -268,7 +270,9 @@ export class SlytherLanguageService {
 
     /** The head of the artifact as it is written, then its prose cut short, as markdown. */
     private static describe(artifact: SlytherArtifact): string {
-        const args = artifact.args.map((arg) => `${arg.name}: ${arg.kind === "string" ? JSON.stringify(arg.value) : String(arg.value)}${arg.optional ? "?" : ""}`);
+        const args = artifact.args.map((arg) =>
+            arg.kind === "param" ? arg.name : `${arg.name}: ${arg.kind === "string" ? JSON.stringify(arg.value) : String(arg.value)}${arg.optional ? "?" : ""}`,
+        );
         const head = [
             artifact.artifact === "artifact" ? "@artifact" : artifact.artifact === SlytherParser.RUN_KIND ? "@run" : artifact.artifact,
             artifact.name,
@@ -288,7 +292,7 @@ export class SlytherLanguageService {
      * the kinds and the directives a script may open with when it is inside no block. Every item
      * replaces the columns given, what was written of it so far.
      */
-    completions(file: string, line: number, text: string): { label: string; detail?: string; start: number; end: number; kind: "reference" | "kind" | "qualifier" | "type" | "namespace" | "directive" }[] {
+    completions(file: string, line: number, text: string): { label: string; detail?: string; start: number; end: number; kind: "reference" | "kind" | "qualifier" | "type" | "namespace" | "directive" | "param" }[] {
         const { parsed, map } = this.analyze(file);
         const enclosing = map.enclosing(file, line);
         const scope = enclosing?.scope ?? "";
@@ -306,6 +310,23 @@ export class SlytherLanguageService {
             const start = text.length - (use[1]?.length ?? 0);
 
             return parsed.artifacts.filter((artifact) => artifact.artifact === "namespace").map((artifact) => ({ label: artifact.name, detail: "namespace", start, end: text.length, kind: "namespace" }));
+        }
+
+        const param = SlytherLanguageService.PARAM.exec(text);
+
+        if (param) {
+            const start = text.length - (param[1]?.length ?? 0);
+            const owner = map.enclosing(file, line, true);
+            const kind = parsed.artifacts.find((artifact) => artifact.artifact === "artifact" && artifact.name === owner?.name);
+            const written = text.slice(text.indexOf("(") + 1);
+
+            return [
+                { name: "id", type: "string" },
+                ...(kind?.args.filter((arg) => arg.kind === "type").map((arg) => ({ name: arg.name, type: `${String(arg.value)}${arg.optional ? "?" : ""}` })) ?? []),
+                ...(/^\s*operation\s+update\b/.test(text) ? [{ name: "errors", type: "string" }] : []),
+            ]
+                .filter((candidate) => !new RegExp(`\\b${candidate.name}\\s*,`).test(written))
+                .map((candidate) => ({ label: candidate.name, detail: candidate.type, start, end: text.length, kind: "param" as const }));
         }
 
         const type = SlytherLanguageService.TYPE.exec(text);

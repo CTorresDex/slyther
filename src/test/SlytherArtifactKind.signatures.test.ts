@@ -4,56 +4,104 @@ import { SlytherParser } from "../src/classes/SlytherParser.class.ts";
 import { SlytherScript } from "../src/classes/SlytherScript.class.ts";
 
 const kinds = (source: string) => SlytherArtifactKind.of(new SlytherParser().parse(new SlytherScript(source)));
-const LOCATE = "operation locate (id: string): deterministic { finds it }";
+const LOCATE = "operation locate: deterministic { finds it }";
 
 describe("SlytherArtifactKind params", () => {
-    test("the args of an operation are its params, in order, with optional types", () => {
+    test("the params of a kind are the id, its own args in order, and the errors an update is run to fix", () => {
         const [kind] = kinds(
-            `@lang "ts"\n@artifact k {\n ${LOCATE}\n operation create (id: string, content: string?) {\n llm write { x }\n }\n operation evaluate {\n llm check { x }\n }\n}`,
+            `@lang "ts"\n@artifact k (content: string?) {\n ${LOCATE}\n operation create {\n llm write { x }\n }\n operation update {\n llm fix { x }\n }\n operation evaluate {\n llm check { x }\n }\n}`,
         );
 
+        expect(kind!.params).toEqual([{ name: "content", type: "string", optional: true }]);
         expect(kind!.operation("create")!.params).toEqual([
             { name: "id", type: "string", optional: false },
             { name: "content", type: "string", optional: true },
         ]);
+        expect(kind!.operation("evaluate")!.params).toEqual([
+            { name: "id", type: "string", optional: false },
+            { name: "content", type: "string", optional: true },
+        ]);
+        expect(kind!.operation("update")!.params).toEqual([
+            { name: "id", type: "string", optional: false },
+            { name: "content", type: "string", optional: true },
+            { name: "errors", type: "string", optional: false },
+        ]);
+    });
+
+    test("an operation narrows to the params it names, in the order it names them", () => {
+        const [kind] = kinds(
+            `@lang "ts"\n@artifact k (path: string, content: string) {\n ${LOCATE}\n operation evaluate (content, id) {\n llm check { x }\n }\n}`,
+        );
+
+        expect(kind!.operation("evaluate")!.params).toEqual([
+            { name: "content", type: "string", optional: false },
+            { name: "id", type: "string", optional: false },
+        ]);
     });
 
     test("a param may be a declared artifact", () => {
-        const kind = kinds(`@lang "ts"\n@artifact class\nclass Dep { d }\n@artifact k {\n ${LOCATE}\n operation evaluate (dep: Dep) {\n llm check { x }\n }\n}`).find((kind) => kind.name === "k");
+        const kind = kinds(`@lang "ts"\n@artifact class\nclass Dep { d }\n@artifact k (dep: Dep) {\n ${LOCATE}\n operation evaluate (dep) {\n llm check { x }\n }\n}`).find((kind) => kind.name === "k");
 
         expect(kind!.operation("evaluate")!.params).toEqual([{ name: "dep", type: "Dep", optional: false }]);
     });
 
-    test("throws when an operation arg is not a type", () => {
-        expect(() => kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n operation evaluate (lang: "ts") {\n llm check { x }\n }\n}`)).toThrow(
-            'Argument "lang" of "k::evaluate" must be a type: the args of an operation are its params.',
+    test("throws when an operation declares a type of its own", () => {
+        expect(() => kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n operation evaluate (content: string) {\n llm check { x }\n }\n}`)).toThrow(
+            'Argument "content" of "k::evaluate" is a type: the params of a kind are declared on the kind, and an operation narrows to them by name.',
         );
     });
 
-    test("throws when locate does not take the id first", () => {
-        expect(() => kinds('@lang "ts"\n@artifact k {\n operation locate: deterministic { x }\n}')).toThrow(
-            'Operation "k::locate" must take (id: string) as its first param.',
+    test("throws when an operation narrows to something its kind does not declare", () => {
+        expect(() => kinds(`@lang "ts"\n@artifact k (content: string) {\n ${LOCATE}\n operation evaluate (nope) {\n llm check { x }\n }\n}`)).toThrow(
+            'Operation "k::evaluate" takes "nope", which "k" does not declare: it takes id, content.',
         );
-        expect(() => kinds('@lang "ts"\n@artifact k {\n operation locate (id: string?): deterministic { x }\n}')).toThrow(
-            'Operation "k::locate" must take (id: string) as its first param.',
+        expect(() => kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n operation evaluate (errors) {\n llm check { x }\n }\n}`)).toThrow(
+            'Operation "k::evaluate" takes "errors", which "k" does not declare: it takes id.',
         );
-        expect(() => kinds('@lang "ts"\n@artifact k {\n operation locate (path: string, id: string): deterministic { x }\n}')).toThrow(
-            'Operation "k::locate" must take (id: string) as its first param.',
+        expect(() => kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n operation evaluate (id, id) {\n llm check { x }\n }\n}`)).toThrow(
+            'Operation "k::evaluate" takes "id" twice.',
         );
     });
 
-    test("locate may take more params than the id", () => {
-        const [kind] = kinds('@lang "ts"\n@artifact k {\n operation locate (id: string, path: string): deterministic { prints the path }\n}');
+    test("throws when a kind declares a param every kind has, or declares one twice", () => {
+        expect(() => kinds(`@lang "ts"\n@artifact k (id: string) {\n ${LOCATE}\n}`)).toThrow(
+            'Kind "k" declares the param "id", which every kind has already: id is the name of the instance and errors is what an update is run to fix.',
+        );
+        expect(() => kinds(`@lang "ts"\n@artifact k (a: string, a: string) {\n ${LOCATE}\n}`)).toThrow(
+            'Kind "k" declares the param "a" twice.',
+        );
+    });
 
-        expect(kind!.operation("locate")!.params).toEqual([
+    test("an instance may only give args its kind declares as params", () => {
+        expect(() => kinds(`@lang "ts"\n@artifact k (path: string) {\n ${LOCATE}\n}\nk a (path: "here") { x }`)).not.toThrow();
+        expect(() => kinds(`@lang "ts"\n@artifact k (path: string) {\n ${LOCATE}\n}\nk a (paht: "here") { x }`)).toThrow(
+            'The k "a" gives the arg "paht", which k does not declare: it takes path.',
+        );
+        expect(() => kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n}\nk a (path: "here") { x }`)).toThrow(
+            'The k "a" gives the arg "path", which k does not declare: it takes no args.',
+        );
+    });
+
+    test("locate takes the id alone unless it names more, and must take it first", () => {
+        const [narrow] = kinds(`@lang "ts"\n@artifact k (path: string) {\n ${LOCATE}\n}`);
+
+        expect(narrow!.operation("locate")!.params).toEqual([{ name: "id", type: "string", optional: false }]);
+
+        const [wide] = kinds('@lang "ts"\n@artifact k (path: string) {\n operation locate (id, path): deterministic { prints the path }\n}');
+
+        expect(wide!.operation("locate")!.params).toEqual([
             { name: "id", type: "string", optional: false },
             { name: "path", type: "string", optional: false },
         ]);
+
+        expect(() => kinds('@lang "ts"\n@artifact k (path: string) {\n operation locate (path, id): deterministic { x }\n}')).toThrow(
+            'Operation "k::locate" must take the id first.',
+        );
     });
 
     test("throws when a value that is not a type is optional", () => {
-        expect(() => kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n operation evaluate (n: 3?) {\n llm check { x }\n }\n}`)).toThrow(
-            'Malformed value "3?" of argument "n" of "k::evaluate".',
+        expect(() => kinds(`@lang "ts"\n@artifact k (n: 3?) {\n ${LOCATE}\n}`)).toThrow(
+            'Malformed value "3?" of argument "n" of "k".',
         );
     });
 });
@@ -94,7 +142,7 @@ describe("SlytherArtifactKind lang", () => {
     test("throws when a step declares a type", () => {
         expect(() =>
             kinds(`@lang "ts"\n@artifact k {\n ${LOCATE}\n operation evaluate {\n llm check (id: string) { x }\n }\n}`),
-        ).toThrow('Argument "id" of "k::evaluate::check" is a type, but only an operation has params.');
+        ).toThrow('Argument "id" of "k::evaluate::check" is a type, but only a kind declares params.');
     });
 
     test("the lang is declared once", () => {
@@ -136,6 +184,13 @@ describe("SlytherArtifactKind built-in operations", () => {
         expect(kind!.operations.filter((operation) => operation.artifact.name === "k::list")).toHaveLength(1);
         expect(list.builtin).toBe(false);
         expect(list.artifact.content).toBe("mine");
+    });
+
+    test("a built-in operation keeps its shape when it is declared by hand", () => {
+        const [kind] = kinds(`@lang "ts"\n@artifact k (content: string) {\n ${LOCATE}\n operation list: deterministic { mine }\n operation signature: deterministic { its shape }\n}\nk a { the a }\nk b { uses #{a} }`);
+
+        expect(kind!.operation("list")!.params).toEqual([]);
+        expect(kind!.operation("signature")!.params).toEqual([{ name: "id", type: "string", optional: false }]);
     });
 
     test("a kind without operations has no built-in ones", () => {

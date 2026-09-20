@@ -1,0 +1,155 @@
+@lang "ts"
+
+@artifact service (requirements: string) {
+
+    A single purpose service: one capability, one instance, consumed by others.
+
+    1. It lives in `src/services/{id}.service.ts`, with its tests in `src/services/{id}.service.test.ts`
+    2. Only static methods are allowed
+    3. Nothing may be defined outside the class
+    4. Only the methods of the business logic of the service belong in it
+
+    5. A general purpose function does not belong here: it belongs in a #{util}, named after the type it
+       operates on. Import it from `src/utils/{Name}.util.ts` and use it. The service neither creates
+       that file nor writes to it: when it does not exist, Slyther creates it from what was asked of it.
+
+    operation locate: deterministic {
+        Prints src/services/{id}.service.ts and src/services/{id}.service.test.ts, one per line, and
+        exits 0. Prints nothing and exits 1 when either does not exist.
+    }
+
+    operation create {
+        deterministic init {
+            Ensures the src/services folder exists, and both files, with the scaffolding:
+            ```ts
+            export class {id: PascalCase}Service {
+
+            }
+            ```
+        }
+
+        llm generate {
+            Implement in the .service.ts file the logic the requirements describe.
+            Implement in the .service.test.ts file the cases the requirements describe: test behaviour,
+            never implementation.
+        }
+    }
+
+    operation evaluate {
+        deterministic shape {
+            Evaluate that:
+
+            1. Both files exist
+            2. The class has only static methods
+            3. Nothing is defined outside the class
+
+            Exits 0 when it complies. Otherwise prints one [ERROR_CODE]: [ERROR_MESSAGE] per discrepancy
+            and exits 1.
+        }
+
+        deterministic tests {
+            Runs the cases of the .service.test.ts file. Exits 0 when they pass, 1 otherwise.
+        }
+
+        llm scope {
+            Every method of the class belongs to the business logic of the service. A general purpose
+            function here is a discrepancy: it belongs in a #{util}.
+        }
+
+        llm coverage {
+            What the .service.test.ts file tests matches the requirements, and tests the behaviour that
+            is expected of the service rather than what the code happens to do.
+        }
+    }
+
+    operation update {
+        llm apply {
+            Bring the .service.ts file in line with the requirements, and the .service.test.ts file in
+            line with the behaviour they describe.
+        }
+    }
+}
+
+@artifact util: demanded {
+
+    A class of general purpose functions, grouped by the type they operate on.
+
+    Its instances are not declared: each exists because the uses of another artifact named it, and the
+    demands it is run with are what those artifacts ask of it.
+
+    1. It lives in `src/utils/{id}.util.ts`, with its tests in `src/utils/{id}.util.test.ts`
+    2. Its id is {Type}Utils: StringUtils, ArrayUtils, NumberUtils, DateUtils
+    3. Only static methods are allowed
+    4. Nothing may be defined outside the class
+    5. No method may know anything of the domain: it takes and returns the types of the language, never
+       the types of the project
+    6. It has exactly the methods of its demands, and no others
+
+    operation locate: deterministic {
+        Prints src/utils/{id}.util.ts and src/utils/{id}.util.test.ts, one per line, and exits 0.
+        Prints nothing and exits 1 when either does not exist.
+    }
+
+    operation create {
+        deterministic init {
+            Ensures the src/utils folder exists, and both files, with the scaffolding:
+            ```ts
+            export class {id} {
+
+            }
+            ```
+        }
+
+        llm generate {
+            Implement the methods the demands name, and only those. Each demand is a `member (kind:id)`
+            line: the member to provide, and the artifact that asked for it.
+            Write the cases of each one in the .util.test.ts file: what it does, and its edges.
+        }
+    }
+
+    operation evaluate {
+        deterministic shape {
+            Evaluate that:
+
+            1. Both files exist
+            2. The class has only static methods
+            3. Nothing is defined outside the class
+            4. The id ends in Utils
+
+            Exits 0 when it complies. Otherwise prints one [ERROR_CODE]: [ERROR_MESSAGE] per discrepancy
+            and exits 1.
+        }
+
+        deterministic asked {
+            Evaluate that the members the signature operation prints are exactly the members the demands
+            name. A member nobody asked for is dead code and a member that was asked for and is missing
+            is a discrepancy: prints each one and exits 1. Exits 0 when they match.
+        }
+
+        deterministic tests {
+            Runs the cases of the .util.test.ts file. Exits 0 when they pass, 1 otherwise.
+        }
+
+        llm purity {
+            Every method is genuinely general purpose: it knows nothing of the domain, holds no business
+            rule, and would serve unchanged in another project. A method named after something of the
+            domain is a discrepancy even when its shape is general.
+        }
+    }
+
+    operation update {
+        llm apply {
+            Add the methods the demands name and that are missing, remove the ones nothing asks for any
+            more, and bring the .util.test.ts file in line with what is left.
+        }
+    }
+}
+
+service Checkout {
+    Processes the payment of an order and returns a receipt.
+    The receipt carries the name of the customer formatted as a title.
+}
+
+service Invoices {
+    Generates the invoice of an order. The file is named after the customer, in a form safe for a URL.
+}

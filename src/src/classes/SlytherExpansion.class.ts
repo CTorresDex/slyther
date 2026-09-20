@@ -63,6 +63,16 @@ export class SlytherExpansion {
             throw new Error(`${what}, but ${kind.name} is composite: a composite kind cannot emit another.`);
         }
 
+        for (const arg of artifact.args) {
+            if (!kind.params.some((param) => param.name === arg.name)) {
+                throw new Error(
+                    `${what} with the arg "${arg.name}", which ${kind.name} does not declare: it takes ${
+                        kind.params.length > 0 ? kind.params.map((param) => param.name).join(", ") : "no args"
+                    }.`,
+                );
+            }
+        }
+
         const create = kind.operation("create");
 
         if (!create) {

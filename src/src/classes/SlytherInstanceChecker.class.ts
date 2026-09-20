@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ProcessUtils } from "./ProcessUtils.class.ts";
-import type { SlytherArtifact } from "./SlytherArtifact.class.ts";
+import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import type { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
 import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import { SlytherExpansion } from "./SlytherExpansion.class.ts";
@@ -15,6 +15,10 @@ import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 export class SlytherInstanceChecker {
     /** The folder, next to the manifest, where what every instance of a composite kind emitted is written. */
     static readonly EXPANDED = "expanded";
+    /** The folder, next to the manifest, where what is asked of every instance of a demanded kind is written. */
+    static readonly DEMANDED = "demanded";
+    /** How deep an instance may ask for another that does not exist yet before the chain is given up on. */
+    private static readonly ROUNDS = 3;
     /** How long a script of an operation gets to finish before it is killed, with everything it spawned, and counted as a failure. */
     private static readonly TIMEOUT = 60_000;
     /** What an llm step of evaluate must reply. */
@@ -76,12 +80,6 @@ export class SlytherInstanceChecker {
 
         await this.migrate(instances);
 
-        for (const key of Object.keys(this.manifest.instances)) {
-            if (!instances.has(key)) {
-                report.push(...(await this.forget(key)));
-            }
-        }
-
         for (const [key, expansion] of expansions) {
             const instance = instances.get(key)!;
 
@@ -113,9 +111,20 @@ export class SlytherInstanceChecker {
             states.set(key, await this.stateOf(key, instance));
         }
 
+        // What the code already written asks for, so an instance nothing declares is checked as any other.
+        await this.demand(coded, states, kinds);
+
+        for (const key of Object.keys(this.manifest.instances)) {
+            if (!instances.has(key) && !coded.has(key)) {
+                report.push(...(await this.forget(key)));
+            }
+        }
+
         await this.warnUndeclared(kinds, instances);
 
         const order = SlytherInstanceChecker.orderOf(coded);
+        /** Every instance put off because what it asks for did not exist yet: how often, and what was done to it before. */
+        const deferred = new Map<string, { rounds: number; done: SlytherInstanceChecker["entry"]["status"]; reason: string }>();
         const pending = order.filter((key) => this.workOf(key, coded.get(key)!, states) !== null);
         const llm = pending.filter((key) => this.needsLlm(coded.get(key)!.kind, this.workOf(key, coded.get(key)!, states)!)).length;
 
@@ -132,6 +141,12 @@ export class SlytherInstanceChecker {
             let state = states.get(key)!;
             const work = this.workOf(key, instance, states);
             const parent = instance.parent ? { parent: instance.parent } : {};
+            /** What the manifest records of who the instance belongs to: the parent that emitted it, or what asks for it. */
+            const owner = {
+                ...parent,
+                ...(instance.demandedBy ? { demandedBy: instance.demandedBy } : {}),
+                ...(instance.demands !== undefined ? { demands: instance.demands } : {}),
+            };
 
             if (work === null) {
                 const record = this.manifest.instances[key];
@@ -143,7 +158,7 @@ export class SlytherInstanceChecker {
                         rulesHash: instance.rules,
                         spec: this.specTextOf(instance),
                         rules: instance.rulesText,
-                        ...parent,
+                        ...owner,
                     };
                     report.push({ key, status: "missing", errors: [], ...parent });
                 } else if (record?.result === "fail") {
@@ -163,6 +178,20 @@ export class SlytherInstanceChecker {
             if (work.operation) {
                 await this.perform(work.operation, instance, key, [], work.reason);
                 state = await this.relocate(key, instance, states);
+
+                // What it turned out to ask for is only known now: whatever is missing is made before it is judged.
+                const asked = await this.demand(coded, states, kinds);
+                const put = deferred.get(key);
+                const rounds = put?.rounds ?? 0;
+
+                if (asked.length > 0 && rounds < SlytherInstanceChecker.ROUNDS) {
+                    deferred.set(key, { rounds: rounds + 1, done: put?.done ?? work.done, reason: put?.reason ?? work.reason });
+                    order.push(...asked, key);
+                    this.options.log?.(`${key}: asks for ${asked.join(", ")}, which nothing has made yet`);
+
+                    continue;
+                }
+
                 verdict =
                     state.segments === undefined
                         ? { pass: false, errors: [work.operation === "create" ? "the create did not produce it" : "the update removed it"] }
@@ -171,14 +200,19 @@ export class SlytherInstanceChecker {
                 verdict = work.broken ? { pass: false, errors: [work.reason] } : await this.evaluate(instance, key, state);
             }
 
-            status = verdict.pass ? work.done : "fail";
+            // An instance put off until what it asked for existed is reported as what was done to it, not as merely evaluated.
+            const put = deferred.get(key);
+            const done = put?.done ?? work.done;
+            const reason = put?.reason ?? work.reason;
+
+            status = verdict.pass ? done : "fail";
 
             if (!verdict.pass && this.options.compile && state.segments !== undefined && this.has(instance.kind, "update")) {
                 this.options.log?.(`${key}: failed evaluation, updating to fix:\n${verdict.errors.map((error) => `    - ${error}`).join("\n")}`);
                 await this.perform("update", instance, key, verdict.errors, work.reason);
                 state = await this.relocate(key, instance, states);
                 verdict = state.segments === undefined ? { pass: false, errors: ["the update removed it"] } : await this.evaluate(instance, key, state);
-                status = verdict.pass ? (work.done === "pass" ? "fixed" : work.done) : "fail";
+                status = verdict.pass ? (done === "pass" ? "fixed" : done) : "fail";
             }
 
             // Without compile, a spec or a rule that changed is not recorded as seen, so a later build still updates it.
@@ -189,7 +223,7 @@ export class SlytherInstanceChecker {
                 rulesHash: seen ? instance.rules : (this.manifest.instances[key]!.rulesHash ?? instance.rules),
                 spec: seen ? this.specTextOf(instance) : this.manifest.instances[key]!.spec,
                 rules: seen ? instance.rulesText : this.manifest.instances[key]!.rules,
-                ...parent,
+                ...owner,
                 ...(state.locatedWith ? { locatedWith: state.locatedWith } : {}),
                 contentHash: state.contentHash ?? "",
                 ...(state.signature ? { signature: state.signature } : {}),
@@ -205,10 +239,12 @@ export class SlytherInstanceChecker {
                 errors: verdict.errors,
             };
             await this.manifest.save();
-            this.options.log?.(`${status} ${key}: ${work.reason} (${StringUtils.duration(Date.now() - started)})`);
-            report.push({ key, status, reason: work.reason, errors: verdict.errors, ...parent });
+            this.options.log?.(`${status} ${key}: ${reason} (${StringUtils.duration(Date.now() - started)})`);
+            report.push({ key, status, reason, errors: verdict.errors, ...parent });
         }
 
+        await this.reap(coded, states, kinds, report);
+        await this.writeDemanded(coded);
         await this.manifest.save();
 
         return SlytherInstanceChecker.grouped(report);
@@ -277,7 +313,7 @@ export class SlytherInstanceChecker {
             }
         }
 
-        await this.pruneExpanded(written);
+        await SlytherInstanceChecker.prune(join(dirname(this.path), SlytherInstanceChecker.EXPANDED), written);
 
         return { parsed: expanded, expansions };
     }
@@ -313,9 +349,8 @@ export class SlytherInstanceChecker {
         return join(dirname(this.path), SlytherInstanceChecker.EXPANDED, kind, `${name}.sly`);
     }
 
-    /** Removes what was written for instances that are gone, and the folders left empty. */
-    private async pruneExpanded(written: Set<string>): Promise<void> {
-        const folder = join(dirname(this.path), SlytherInstanceChecker.EXPANDED);
+    /** Removes what was written, under the folder, for instances that are gone, and the folders left empty. */
+    private static async prune(folder: string, written: Set<string>): Promise<void> {
         const kinds = await readdir(folder, { withFileTypes: true }).catch(() => []);
 
         for (const kind of kinds) {
@@ -336,15 +371,16 @@ export class SlytherInstanceChecker {
     }
 
     /**
-     * Drops the record of an instance that is no longer declared, unless a parent emitted it and its
-     * code is still there: then it is an orphan, reported and kept out of the graph until its code is gone.
+     * Drops the record of an instance that is no longer declared, unless a parent emitted it, or
+     * something demanded it, and its code is still there: then it is an orphan, reported and kept out
+     * of the graph until its code is gone. A demanded instance is an orphan once nothing asks for it
+     * at all, never because one of the artifacts that used it stopped.
      */
     private async forget(key: string): Promise<SlytherInstanceChecker["entry"][]> {
         const record = this.manifest.instances[key]!;
         const boundary = key.indexOf(":");
-        const located = record.parent
-            ? await this.runOperation(key.slice(0, boundary), "locate", record.locatedWith ?? [key.slice(boundary + 1)])
-            : undefined;
+        const owned = record.parent !== undefined || record.demandedBy !== undefined;
+        const located = owned ? await this.runOperation(key.slice(0, boundary), "locate", record.locatedWith ?? [key.slice(boundary + 1)]) : undefined;
 
         if (located?.code !== 0) {
             delete this.manifest.instances[key];
@@ -355,7 +391,15 @@ export class SlytherInstanceChecker {
         record.result = "orphan";
         record.errors = [];
 
-        return [{ key, status: "orphan", reason: `no longer emitted by ${record.parent}`, errors: [], parent: record.parent }];
+        return [
+            {
+                key,
+                status: "orphan",
+                reason: record.parent ? `no longer emitted by ${record.parent}` : "nothing asks for it any more",
+                errors: [],
+                ...(record.parent ? { parent: record.parent } : {}),
+            },
+        ];
     }
 
     /**
@@ -405,10 +449,13 @@ export class SlytherInstanceChecker {
      * that has no code of its own, so a change to the rules of a kind or the prose of a plain artifact
      * or of a parent counts as a change of its spec. Just its own hash when it leans on nothing.
      */
-    private specHashOf(instance: { artifact: SlytherArtifact; leans: string[] }): string {
-        return instance.leans.length === 0
-            ? instance.artifact.hash
-            : SlytherInstanceChecker.hash(instance.artifact.hash, ...instance.leans.map((reference) => `${reference}@${this.declared.get(reference)?.hash ?? ""}`));
+    private specHashOf(instance: { artifact: SlytherArtifact; leans: string[]; demands?: string }): string {
+        const parts = [
+            ...(instance.demands === undefined ? [] : [`demands\n${instance.demands}`]),
+            ...instance.leans.map((reference) => `${reference}@${this.declared.get(reference)?.hash ?? ""}`),
+        ];
+
+        return parts.length === 0 ? instance.artifact.hash : SlytherInstanceChecker.hash(instance.artifact.hash, ...parts);
     }
 
     /**
@@ -416,7 +463,7 @@ export class SlytherInstanceChecker {
      * written out, so what an update is brought in line with can be diffed against what it was last
      * brought in line with.
      */
-    private specTextOf(instance: { artifact: SlytherArtifact; leans: string[] }): string {
+    private specTextOf(instance: { artifact: SlytherArtifact; leans: string[]; demands?: string }): string {
         const leans = instance.leans.map((reference) => {
             const artifact = this.declared.get(reference);
 
@@ -425,7 +472,7 @@ export class SlytherInstanceChecker {
                 : `(leans on ${reference}, which is not declared)`;
         });
 
-        return [SlytherInstanceChecker.specOf(instance.artifact), ...leans].join("\n\n");
+        return [SlytherInstanceChecker.mustOf(instance), ...leans].join("\n\n");
     }
 
     /**
@@ -474,7 +521,7 @@ export class SlytherInstanceChecker {
      */
     private workOf(
         key: string,
-        instance: { kind: string; artifact: SlytherArtifact; leans: string[]; rules: string },
+        instance: { kind: string; artifact: SlytherArtifact; leans: string[]; rules: string; demands?: string },
         states: Map<string, SlytherInstanceChecker["state"]>,
     ): { reason: string; operation?: "create" | "update"; done: "created" | "updated" | "pass"; broken: boolean } | null {
         const state = states.get(key)!;
@@ -515,6 +562,192 @@ export class SlytherInstanceChecker {
     }
 
     /**
+     * Brings the instances of every demanded kind in line with what is asked of them: one is added for
+     * every `kind:id` the uses of an instance with code names and nothing declares, and every one
+     * already known is given what is asked of it now. The reference is recorded on whoever asked, so a
+     * demanded instance is ordered before it, read as its context and invalidated as any dependency.
+     *
+     * Returns the keys it added or whose demands it changed, which is what must be checked again:
+     * before the instances are ordered they all are anyway, and once one has been created, what its
+     * code turned out to ask for is only known here. An instance of a demanded kind the manifest knows
+     * and nothing asks for any more is left out, so it is forgotten, or reported as an orphan while its
+     * code is still there.
+     */
+    private async demand(
+        coded: Map<string, SlytherInstanceChecker["instance"]>,
+        states: Map<string, SlytherInstanceChecker["state"]>,
+        kinds: SlytherArtifactKind[],
+    ): Promise<string[]> {
+        const demanded = new Set(kinds.filter((kind) => kind.demanded).map((kind) => kind.name));
+
+        if (demanded.size === 0) {
+            return [];
+        }
+
+        const changed: string[] = [];
+
+        for (const [key, demand] of SlytherInstanceChecker.demandsOf(states, demanded)) {
+            const known = coded.get(key);
+
+            if (!known) {
+                const born = this.bornOf(key, kinds, demand);
+
+                coded.set(key, born);
+                states.set(key, await this.stateOf(key, born));
+                changed.push(key);
+            } else if (known.demands !== demand.demands) {
+                known.demands = demand.demands;
+                known.demandedBy = demand.demandedBy;
+                changed.push(key);
+            } else {
+                known.demandedBy = demand.demandedBy;
+            }
+
+            for (const by of demand.demandedBy) {
+                const demander = coded.get(by);
+
+                if (demander && !demander.references.includes(key)) {
+                    demander.references.push(key);
+                }
+            }
+        }
+
+        return changed;
+    }
+
+    /**
+     * Reports every instance of a demanded kind that nothing asks for any more, once every instance has
+     * been brought in line. What an artifact asks for is only certain once it has been written, so one
+     * that stopped asking is only known here, after the instance that stopped was updated, and never
+     * when the graph was first gathered. As with any orphan its code is not touched, and it is reported
+     * on every check until its code is gone. One that was declared by hand is left alone: what declares
+     * it keeps it, whether or not anything uses it.
+     */
+    private async reap(
+        coded: Map<string, SlytherInstanceChecker["instance"]>,
+        states: Map<string, SlytherInstanceChecker["state"]>,
+        kinds: SlytherArtifactKind[],
+        report: SlytherInstanceChecker["entry"][],
+    ): Promise<void> {
+        const demanded = new Set(kinds.filter((kind) => kind.demanded).map((kind) => kind.name));
+
+        if (demanded.size === 0) {
+            return;
+        }
+
+        const asked = SlytherInstanceChecker.demandsOf(states, demanded);
+
+        for (const [key, instance] of coded) {
+            const record = this.manifest.instances[key];
+
+            if (!instance.demanded || asked.has(key) || this.declared.has(key) || !record) {
+                continue;
+            }
+
+            record.result = "orphan";
+            record.errors = [];
+            instance.demands = undefined;
+            coded.delete(key);
+
+            const entry: SlytherInstanceChecker["entry"] = { key, status: "orphan", reason: "nothing asks for it any more", errors: [] };
+            const at = report.findIndex((candidate) => candidate.key === key);
+
+            if (at < 0) {
+                report.push(entry);
+            } else {
+                report[at] = entry;
+            }
+        }
+    }
+
+    /**
+     * What every instance of a demanded kind is asked for, from the uses of every instance that has
+     * code: the spec of an artifact nobody declares is what the artifacts that use it ask of it. Each
+     * demand is a `member (kind:id)` line, sorted, so the same demands read and hash the same however
+     * the instances that make them happened to be ordered.
+     */
+    private static demandsOf(
+        states: Map<string, SlytherInstanceChecker["state"]>,
+        demanded: Set<string>,
+    ): Map<string, { demands: string; demandedBy: string[] }> {
+        const asked = new Map<string, { members: Set<string>; by: Set<string> }>();
+
+        for (const [key, state] of states) {
+            for (const [reference, members] of Object.entries(state.uses ?? {})) {
+                if (reference === key || !demanded.has(reference.slice(0, reference.indexOf(":")))) {
+                    continue;
+                }
+
+                const entry = asked.get(reference) ?? { members: new Set<string>(), by: new Set<string>() };
+
+                for (const member of members) {
+                    entry.members.add(`${member} (${key})`);
+                }
+
+                entry.by.add(key);
+                asked.set(reference, entry);
+            }
+        }
+
+        return new Map(
+            [...asked].map(([reference, entry]) => [
+                reference,
+                { demands: [...entry.members].sort().join("\n"), demandedBy: [...entry.by].sort() },
+            ]),
+        );
+    }
+
+    /**
+     * An instance of a demanded kind that nothing declares: it has an artifact of its own, with no args
+     * and no prose, since everything it must do is what is asked of it.
+     */
+    private bornOf(key: string, kinds: SlytherArtifactKind[], demand: { demands: string; demandedBy: string[] }): SlytherInstanceChecker["instance"] {
+        const boundary = key.indexOf(":");
+        const kind = key.slice(0, boundary);
+        const name = key.slice(boundary + 1);
+        const rules = kinds.find((candidate) => candidate.name === kind)!;
+
+        return {
+            kind,
+            name,
+            artifact: new SlytherArtifact(kind, name, [], [], "", []),
+            rules: rules.scopeHash,
+            rulesText: rules.artifact.prose,
+            references: [],
+            leans: [],
+            composite: false,
+            demanded: true,
+            demands: demand.demands,
+            demandedBy: demand.demandedBy,
+        };
+    }
+
+    /**
+     * Writes what is asked of every instance of a demanded kind next to the manifest, one file per
+     * instance, as the declaration nobody wrote, so a graph that grows out of the code is committed and
+     * reviewed rather than only inferred, and what is written for one nothing asks for any more is removed.
+     */
+    private async writeDemanded(coded: Map<string, SlytherInstanceChecker["instance"]>): Promise<void> {
+        const folder = join(dirname(this.path), SlytherInstanceChecker.DEMANDED);
+        const written = new Set<string>();
+
+        for (const instance of coded.values()) {
+            if (instance.demands === undefined) {
+                continue;
+            }
+
+            const path = join(folder, instance.kind, `${instance.name}.sly`);
+            const body = instance.demands.split("\n").map((line) => `    ${line}`).join("\n");
+
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, `${instance.kind} ${instance.name} {\n    What the artifacts that use it ask of it, and nothing more:\n\n${body}\n}\n`);
+            written.add(path);
+        }
+
+        await SlytherInstanceChecker.prune(folder, written);
+    }
+
+    /**
      * The instances: every artifact whose kind has operations, with the instances with code it
      * references, which are its dependencies, what else it references, which it leans on, and the
      * instance that emitted it, if any.
@@ -528,6 +761,7 @@ export class SlytherInstanceChecker {
         const written = new Map(kinds.map((kind) => [kind.name, kind.artifact.prose]));
         const checkable = new Set(kinds.filter((kind) => kind.operations.length > 0).map((kind) => kind.name));
         const composite = new Set(kinds.filter((kind) => kind.composite).map((kind) => kind.name));
+        const demanded = new Set(kinds.filter((kind) => kind.demanded).map((kind) => kind.name));
         const parents = new Map([...expansions].flatMap(([parent, expansion]) => expansion.emitted.map((key) => [key, parent] as const)));
         const instances = new Map<string, SlytherInstanceChecker["instance"]>();
 
@@ -546,6 +780,7 @@ export class SlytherInstanceChecker {
                     references: [],
                     leans: [],
                     composite: composite.has(artifact.artifact),
+                    demanded: demanded.has(artifact.artifact),
                     ...(parent ? { parent } : {}),
                 });
             }
@@ -667,7 +902,7 @@ export class SlytherInstanceChecker {
      */
     private changeOf(
         key: string,
-        instance: { kind: string; artifact: SlytherArtifact; leans: string[]; rules: string },
+        instance: { kind: string; artifact: SlytherArtifact; leans: string[]; rules: string; demands?: string },
         state: SlytherInstanceChecker["state"],
         states: Map<string, SlytherInstanceChecker["state"]>,
     ): string | null {
@@ -741,7 +976,7 @@ export class SlytherInstanceChecker {
      * through the generator, each followed by what the instance must do, as declared, and its code.
      */
     private async evaluate(
-        instance: { kind: string; name: string; artifact: SlytherArtifact },
+        instance: { kind: string; name: string; artifact: SlytherArtifact; demands?: string },
         key: string,
         state: SlytherInstanceChecker["state"],
     ): Promise<{ pass: boolean; errors: string[] }> {
@@ -770,7 +1005,7 @@ export class SlytherInstanceChecker {
                 "",
                 "### What it must do",
                 "",
-                SlytherInstanceChecker.specOf(instance.artifact),
+                SlytherInstanceChecker.mustOf(instance),
                 "",
                 "### Its code",
                 "",
@@ -848,7 +1083,7 @@ export class SlytherInstanceChecker {
             "",
             "### What it must do",
             "",
-            SlytherInstanceChecker.specOf(instance.artifact),
+            SlytherInstanceChecker.mustOf(instance),
             "",
         ].join("\n");
 
@@ -913,19 +1148,30 @@ export class SlytherInstanceChecker {
     /**
      * The args an operation is run with for an instance, one per param, by the name of the param: id is
      * the name of the instance, errors is the errors it is run to fix, a param named as an arg of the
-     * instance is the value of that arg, and any other is the prose of the instance. Throws when a
-     * param that is not optional gets nothing.
+     * instance is the value of that arg, and any other is the prose of the instance, unless it is
+     * optional, which the instance simply did not give. Throws when a param that is not optional gets
+     * nothing.
      */
     private static argsOf(
         operation: SlytherArtifactManifest["operations"][string],
-        instance: { name: string; artifact: SlytherArtifact },
+        instance: { name: string; artifact: SlytherArtifact; demands?: string },
         key: string,
         errors: string[],
     ): string[] {
         return operation.params.map((param) => {
             const arg = instance.artifact.args.find((candidate) => candidate.name === param.name);
             const value =
-                param.name === "id" ? instance.name : param.name === "errors" ? errors.join("\n") : arg !== undefined ? String(arg.value) : instance.artifact.prose;
+                param.name === "id"
+                    ? instance.name
+                    : param.name === "errors"
+                      ? errors.join("\n")
+                      : param.name === "demands" && instance.demands !== undefined
+                        ? instance.demands
+                        : arg !== undefined
+                          ? String(arg.value)
+                          : param.optional
+                            ? ""
+                            : instance.artifact.prose;
 
             if (value === "" && !param.optional && param.name !== "errors") {
                 throw new Error(`${key} gives nothing for the param "${param.name}" of ${operation.kind}::${operation.name}: declare it as an arg, or write it as the prose of the instance.`);
@@ -939,10 +1185,25 @@ export class SlytherInstanceChecker {
      * The args the read-only operation of the kind runs with for the instance, filled as create fills
      * them, so a kind whose locate needs more than the id gets it from the args of the instance.
      */
-    private argsFor(kind: string, operation: string, instance: { name: string; artifact: SlytherArtifact }, key: string): string[] {
+    private argsFor(kind: string, operation: string, instance: { name: string; artifact: SlytherArtifact; demands?: string }, key: string): string[] {
         const record = this.built.operations[`${kind}::${operation}`];
 
         return record ? SlytherInstanceChecker.argsOf(record, instance, key, []) : [instance.name];
+    }
+
+    /**
+     * What the instance must do, as whoever writes or evaluates it reads it: its declaration and, when
+     * its kind is demanded, what the artifacts that use it ask of it, which is the whole of its spec
+     * when nothing declared it, and what a declaration adds to when one did.
+     */
+    private static mustOf(instance: { artifact: SlytherArtifact; demands?: string }): string {
+        if (instance.demands === undefined) {
+            return SlytherInstanceChecker.specOf(instance.artifact);
+        }
+
+        const declared = instance.artifact.prose || instance.artifact.args.length > 0 ? [SlytherInstanceChecker.specOf(instance.artifact), ""] : [];
+
+        return [...declared, "What the artifacts that use it ask of it, and nothing more:", "", instance.demands || "(nothing)"].join("\n");
     }
 
     /** The instance as declared, for the generator to read: its args, one per line, and its prose. */
@@ -966,9 +1227,16 @@ export class SlytherInstanceChecker {
         return SlytherInstanceChecker.hash(...paths.map((path) => `${path}@${this.built.files[path]?.outputHash ?? ""}`));
     }
 
-    /** Warns about every id list prints that the script does not declare. */
+    /**
+     * Warns about every id list prints that the script does not declare. A demanded kind is left out:
+     * nothing declares its instances, so an id nobody wrote down is what it looks like when it works.
+     */
     private async warnUndeclared(kinds: SlytherArtifactKind[], instances: Map<string, { kind: string; name: string }>): Promise<void> {
         for (const kind of kinds) {
+            if (kind.demanded) {
+                continue;
+            }
+
             const listed = await this.runOperation(kind.name, "list", []);
 
             if (!listed || listed.code !== 0) {
@@ -1096,6 +1364,12 @@ export class SlytherInstanceChecker {
         references: string[];
         leans: string[];
         composite: boolean;
+        /** Whether its kind is demanded, so nothing declares it and its spec is what the artifacts that use it ask. */
+        demanded: boolean;
+        /** What those artifacts ask of it, one `member (kind:id)` per line, when its kind is demanded. */
+        demands?: string;
+        /** Every instance whose uses asks for it, when its kind is demanded, so it is an orphan once none does. */
+        demandedBy?: string[];
         parent?: string;
     };
 

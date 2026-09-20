@@ -117,7 +117,7 @@ describe("SlytherRunScript", () => {
 const SPEC = `@lang "sh"
 @artifact k {
     rules of k
-    operation locate (id: string): deterministic { prints src/{id}.txt }
+    operation locate: deterministic { prints src/{id}.txt }
 }
 @run { writes started }
 @run setup (name: string) {

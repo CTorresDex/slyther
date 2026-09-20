@@ -18,6 +18,10 @@ class SlytherInstanceManifest {
     - rules: The rules of its kind it was last brought in line with, as written. Both are absent in a
       manifest written before version 3
     - parent: The instance whose expand emitted it, when it was not declared by hand
+    - demandedBy: Every instance whose uses asks for this one, when its kind is demanded, so it is an
+      orphan once none does, and never because one of them stopped
+    - demands: What those instances ask of it, one `member (kind:id)` line per member, sorted: the spec
+      of an artifact nobody declares, which its spec hash covers as a declaration covers any other
     - locatedWith: The args locate was run with, when it takes more than the id, so the instance can be
       found again once its declaration is gone or its args changed
     - contentHash: The hash of the segments locate prints, each as its path and its content, sorted, so
@@ -54,6 +58,29 @@ class SlytherInstanceChecker {
     When what it prints is not valid, the instance fails with the reason and emits nothing. Since it has
     no code to evaluate, it is reported as expanded, with how many instances it emitted, and every
     emitted instance is recorded with it as its parent and reported under it.
+
+    An instance of a demanded kind is not declared at all: it exists because the uses of an instance
+    that has code named it, as `kind:id`, and what those uses ask of it is the whole of its spec. So
+    every instance with code is asked what it uses, the answers are gathered by the instance they name,
+    and one that no instance declares is added to the graph with what is asked of it as its demands and
+    the instances that ask as its demandedBy. It is then located, created, evaluated, updated and
+    invalidated as any other, and the reference is recorded on whoever asked, so it is ordered before
+    it, read as its context and compared against its signature. One declared by hand is kept and what is
+    asked of it is added to what it declares, rather than replacing it, since what declares an artifact
+    is never overridden by what uses it.
+
+    What an instance asks for is only known once it has been written, so an instance that was just
+    created or updated is asked again, and when it named something that does not exist, that is created
+    first and the instance is put off until it does, rather than failing for a reference nothing has
+    made yet. An instance created that way may ask for another in turn, which is satisfied the same way,
+    up to three rounds deep, after which the instance is judged as it stands rather than the chain
+    growing without end.
+
+    An instance of a demanded kind that nothing asks for any more is an orphan, which is only certain
+    once every instance has been brought in line, since an instance that stopped asking only says so
+    once it has been updated. What is asked of every one is written as `demanded/kind/name.sly` next to
+    the manifest, as the declaration nobody wrote, so a graph that grows out of the code is committed
+    and reviewed rather than only inferred, and what is written for one nothing asks for any more is removed.
 
     An instance the manifest knows by a parent that no longer emits it, or whose parent is gone, is an
     orphan: it leaves the graph, so it is neither created, updated nor evaluated, its code is not
@@ -115,9 +142,11 @@ class SlytherInstanceChecker {
 
     Create and update run with their params filled from the instance, by the name of each param: id is
     the name of the instance, errors is the errors it is run to fix, a param named as an arg of the
-    instance is the value of that arg, and any other is the prose of the instance; a param that is not
-    optional and gets nothing must throw an error. A deterministic one runs its scripts in order, handed
-    the params as their args, and throws when one fails.
+    instance is the value of that arg, and any other is the prose of the instance, unless it is optional,
+    which the instance simply did not give; a param that is not optional and gets nothing must throw an
+    error. Which params an operation is run with is the kind's to say, see
+    #{Compiler::SlytherArtifactKind}: the instance only gives the args. A deterministic one runs its
+    scripts in order, handed the params as their args, and throws when one fails.
 
     Any other is its markdown, executed by the generator, and is handed the params twice: substituted
     where the markdown wrote them in braces, and as the instance it is run on, named with its kind and
@@ -140,5 +169,7 @@ class SlytherInstanceChecker {
     checking refuses to create, update or evaluate more instances with the llm than allowed, before
     doing any.
 
-    Every id list prints that the script does not declare is reported as a warning.
+    Every id list prints that the script does not declare is reported as a warning, except for a
+    demanded kind: nothing declares its instances, so an id nobody wrote down is what it looks like
+    when it works.
 }

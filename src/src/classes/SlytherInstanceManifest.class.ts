@@ -27,6 +27,10 @@ export class SlytherInstanceManifest {
                 rules?: string;
                 /** The instance whose expand emitted it, when it was not declared by hand. */
                 parent?: string;
+                /** Every instance whose uses asks for this one, when its kind is demanded, so it is an orphan once none does. */
+                demandedBy?: string[];
+                /** What those instances ask of it, one `member (kind:id)` per line: the spec of an instance nobody declares. */
+                demands?: string;
                 /** The args locate was run with, when it takes more than the id, so the instance can be found again once its declaration is gone or its args changed. */
                 locatedWith?: string[];
                 /** The hash of the code of the instance, as located, without where it is. */

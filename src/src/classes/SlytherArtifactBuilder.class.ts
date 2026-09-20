@@ -457,6 +457,7 @@ export class SlytherArtifactBuilder {
             "- It runs from the folder the code of the project lives in, so every path it reads or prints is relative to that folder.",
             "- It prints its result on stdout and its errors on stderr, never asks for input, and exits with the codes the operation describes: 0 on success and 1 when what it looks for does not exist, unless the operation says otherwise.",
             `- It is a single, self-contained file${runtime.lang === "ts" ? " run by bun, so it may use the Bun and node APIs" : ""}, importing only the dependencies it declares.`,
+            ...SlytherArtifactBuilder.demandsOf(kind, operation.params),
             ...(others.length > 0
                 ? ["- The operations of the kind built before this one are scripts it may run instead of reimplementing them, and none of them runs this one, so running one never comes back here:", ...others]
                 : []),
@@ -464,7 +465,22 @@ export class SlytherArtifactBuilder {
         ].join("\n");
     }
 
-    /** What the script of an expand is told about what it prints: the form of a declaration and the kinds it may emit, with what their create needs. */
+    /**
+     * What whoever writes for a demanded kind is told about its demands: nothing declares an instance of
+     * one, so the param is the whole of what the instance must do, and what it holds has to be said
+     * outright rather than left to the rules of the kind to mention.
+     */
+    private static demandsOf(kind: SlytherArtifactKind, params: { name: string }[]): string[] {
+        if (!kind.demanded || !params.some((param) => param.name === "demands")) {
+            return [];
+        }
+
+        return [
+            `- Nothing declares an instance of a ${kind.name}: it exists because the uses of another artifact named it. The param "demands" is what those artifacts ask of it, one \`member (kind:id)\` line per member: the member to provide, and the artifact that asked for it. It is the whole of what the instance must do, so the instance has exactly those members and no others.`,
+        ];
+    }
+
+    /** What the script of an expand is told about what it prints: the form of a declaration and the kinds it may emit, with the args each of them takes. */
     private static emitsOf(kinds: SlytherArtifactKind[], kind: SlytherArtifactKind, cwd: string): string[] {
         const emitted = kind.emits.map((name) => kinds.find((candidate) => candidate.name === name)!);
 
@@ -473,14 +489,13 @@ export class SlytherArtifactBuilder {
             "",
             `The declarations of the artifacts the ${kind.name} is made of, as they are written in a Slyther script, one per declaration: \`kind name (arg: "value", other: "value") { prose }\`, where the args are optional and the braces hold prose. The name is relative to the ${kind.name}: \`endpoint create\` printed for \`Users\` declares \`Users::create\`. The prose may reference another artifact as \`#{name}\`, and the ${kind.name} itself is always referenced, so the prose need not repeat what it says.`,
             "",
-            "It may only declare the kinds below, each with the args or the prose its create needs: a param of create that is not given as an arg is filled with the prose, so a declaration without args must have prose.",
+            "It may only declare the kinds below, each with the args or the prose its create needs: a param that is not given as an arg is filled with the prose, so a declaration without args must have prose. A kind takes only the args listed with it, and any other is an error.",
             ...emitted.flatMap((emitted) => {
-                const create = emitted.operation("create");
-                const needed = (create?.params ?? []).filter((param) => param.name !== "id" && param.name !== "errors");
+                const needed = emitted.params;
 
                 return [
                     "",
-                    `### ${emitted.name}${needed.length > 0 ? `, whose create needs ${needed.map((param) => `${param.name} (${param.type}${param.optional ? ", optional" : ""})`).join(", ")}` : ""}`,
+                    `### ${emitted.name}${needed.length > 0 ? `, which takes ${needed.map((param) => `${param.name} (${param.type}${param.optional ? ", optional" : ""})`).join(", ")}` : ", which takes no args"}`,
                     "",
                     emitted.artifact.textIn(cwd) || "(no rules)",
                 ];
@@ -557,6 +572,7 @@ export class SlytherArtifactBuilder {
             "",
             `Params: ${SlytherArtifactBuilder.paramsOf(operation.params)}`,
             "",
+            ...SlytherArtifactBuilder.section(SlytherArtifactBuilder.demandsOf(kind, operation.params)),
             `## Rules of every ${kind.name}`,
             "",
             kind.rules,
@@ -585,6 +601,7 @@ export class SlytherArtifactBuilder {
             "",
             `Params: ${SlytherArtifactBuilder.paramsOf(record.params)}`,
             "",
+            ...SlytherArtifactBuilder.section(SlytherArtifactBuilder.demandsOf(kind, record.params)),
             ...(operation.artifact.prose ? [operation.artifact.prose, ""] : []),
             `## Rules of every ${kind.name}`,
             "",
@@ -630,6 +647,11 @@ export class SlytherArtifactBuilder {
 
     private static signatureOf(params: { name: string; type: string; optional: boolean }[]): string {
         return ` (${params.map((param) => `${param.name}: ${param.type}${param.optional ? "?" : ""}`).join(", ")})`;
+    }
+
+    /** The lines followed by a blank one, or nothing at all when there are none. */
+    private static section(lines: string[]): string[] {
+        return lines.length === 0 ? [] : [...lines, ""];
     }
 
     private static paramsOf(params: { name: string; type: string; optional: boolean }[]): string {

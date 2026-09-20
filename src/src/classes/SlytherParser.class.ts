@@ -16,9 +16,9 @@ export class SlytherParser {
      * `ref "path"` and, to report it, a brace written after the path as well.
      */
     private static readonly BODY = String.raw`\s*(?:(\{)(.*)|(from|ref)\s+["']([^"']+)["']\s*(\{.*)?)?\s*$`;
-    /** `@artifact Name (args): qualifiers { tail`: declares a kind. The body is optional, the tail is whatever follows the brace. */
+    /** `@artifact Name (params) (config): qualifiers { tail`: declares a kind. Only the name is required, the tail is whatever follows the brace. */
     private static readonly ARTIFACT = new RegExp(
-        String.raw`^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?` + SlytherParser.BODY,
+        String.raw`^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?` + SlytherParser.BODY,
         "d",
     );
     /** `@run name (params) (config) { tail`: declares a script that runs the project. Only the body is required. */
@@ -382,7 +382,7 @@ export class SlytherParser {
             const kind = SlytherParser.ARTIFACT.exec(line);
 
             if (kind) {
-                const [, name, args, qualifiers, open, tail, mode, file, both] = kind;
+                const [, name, params, config, qualifiers, open, tail, mode, file, both] = kind;
 
                 if (name === SlytherParser.RUN_KIND) {
                     this.fail(`"${name}" is the kind of the scripts declared with @run and cannot be declared as a kind.`);
@@ -395,10 +395,10 @@ export class SlytherParser {
                     name!,
                     name!,
                     "",
-                    args ?? "",
+                    this.groupedArgsOf(`The kind "${name}"`, "@artifact", params, config),
                     qualifiers ?? "",
                     this.bodyOf(open, tail, mode, file, both, name!),
-                    SlytherParser.whereOf(path, index, line, kind, { kind: "@artifact", name: 1, args: [2], path: 7 }),
+                    SlytherParser.whereOf(path, index, line, kind, { kind: "@artifact", name: 1, args: [2, 3], path: 8 }),
                 );
                 continue;
             }
@@ -420,7 +420,7 @@ export class SlytherParser {
                     name,
                     `${SlytherParser.RUN_KIND}::${name}`,
                     SlytherParser.RUN_KIND,
-                    this.runArgsOf(name, params, config),
+                    this.groupedArgsOf(`The script "${name}"`, "@run", params, config),
                     "",
                     this.bodyOf(open, tail, mode, file, both, `${SlytherParser.RUN_KIND}::${name}`),
                     SlytherParser.whereOf(path, index, line, run, { kind: "@run", name: 1, args: [2, 3], path: 7 }),
@@ -496,10 +496,10 @@ export class SlytherParser {
     }
 
     /**
-     * The args of a script as one list, params first. With two parens the first holds only types and the
-     * second only values; a single paren holds either, but never both.
+     * The args of a declaration written in two parens as one list, params first. With two parens the
+     * first holds only types and the second only values; a single paren holds either, but never both.
      */
-    private runArgsOf(name: string, params: string | undefined, config: string | undefined): string {
+    private groupedArgsOf(what: string, directive: string, params: string | undefined, config: string | undefined): string {
         const entriesOf = (text: string | undefined) =>
             text === undefined ? [] : StringUtils.splitUnquoted(text, ",").filter((entry) => entry.trim().length > 0);
         const isType = (entry: string) => {
@@ -511,9 +511,9 @@ export class SlytherParser {
         const second = entriesOf(config);
 
         if (config !== undefined && (first.some((entry) => !isType(entry)) || second.some(isType))) {
-            this.fail(`The script "${name}" declared with @run takes its params in the first parens and its configuration in the second.`);
+            this.fail(`${what} declared with ${directive} takes its params in the first parens and its configuration in the second.`);
         } else if (config === undefined && first.some(isType) && first.some((entry) => !isType(entry))) {
-            this.fail(`The script "${name}" declared with @run takes its params and its configuration in separate parens.`);
+            this.fail(`${what} declared with ${directive} takes its params and its configuration in separate parens.`);
         }
 
         return [...first, ...second].join(",");
@@ -828,17 +828,28 @@ export class SlytherParser {
         }
     }
 
-    private argumentsOf(declaration: { args: string; scope: string; where?: SlytherParser["where"] }, owner: string): SlytherArtifact["args"] {
+    private argumentsOf(declaration: { artifact: string; args: string; scope: string; where?: SlytherParser["where"] }, owner: string): SlytherArtifact["args"] {
         return StringUtils.splitUnquoted(declaration.args, ",").flatMap((entry, position) => {
             const columns = declaration.where?.entries[position];
             const where = columns && declaration.where ? { file: declaration.where.file, line: declaration.where.line, ...columns } : SlytherParser.lineOf(declaration.where);
             const boundary = entry.indexOf(":");
-            const name = boundary < 0 ? "" : entry.slice(0, boundary).trim();
+            const name = (boundary < 0 ? entry : entry.slice(0, boundary)).trim();
 
             if (!SlytherParser.SYMBOL.test(name)) {
                 this.fail(`Malformed argument "${entry.trim()}" of "${owner}".`, where);
 
                 return [];
+            }
+
+            // A bare name gives no value: it is an operation narrowing to a param its kind declares.
+            if (boundary < 0) {
+                if (declaration.artifact !== "operation") {
+                    this.fail(`Argument "${name}" of "${owner}" has no value: only an operation writes a bare name, to narrow to the params of its kind.`, where);
+
+                    return [];
+                }
+
+                return [{ name, kind: "param" as const, value: "" }];
             }
 
             const value = this.valueOf(entry.slice(boundary + 1).trim(), name, owner, declaration.scope, where);

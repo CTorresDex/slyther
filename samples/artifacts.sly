@@ -1,6 +1,6 @@
 @lang "ts"
 
-@artifact class {
+@artifact class (requirements: string) {
     1. ALL Classes are defined at src/src/classes/{name}.class.ts, where name is the id written in PascalCase.
     2. Every class must have only one top level definition, the class. No helper functions, no types, no variables on the top level.
     3. The functions defined in the class are only from the scope of the class, any general purpose utility function must be defined at the respective utils class called by the name of the type (StringUtils, FunctionUtils, NumberUtils, etc...)
@@ -14,11 +14,11 @@
     }
     ```
 
-    operation locate (id: string): deterministic {
+    operation locate: deterministic {
         Prints src/src/classes/{name}.class.ts and exits 0 if the file exists, otherwise prints nothing and exits 1.
     }
 
-    operation create (id: string, requirements: string) {
+    operation create {
         deterministic scaffold (lang: "ts") {
             Scaffolds the class as defined at the rules, exits 1 if it already exists.
         }
@@ -28,7 +28,7 @@
         }
     }
 
-    operation evaluate (id: string) {
+    operation evaluate (id) {
         deterministic check (lang: "ts") {
             Evaluate that:
 
