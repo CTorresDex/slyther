@@ -89,6 +89,8 @@ export class SlytherInstanceChecker {
                 ...SlytherInstanceChecker.emptyRecord(),
                 specHash: this.specHashOf(instance),
                 rulesHash: instance.rules,
+                spec: this.specTextOf(instance),
+                rules: instance.rulesText,
                 evaluatedWith: this.evaluatedWithOf(instance.kind),
                 result: expansion.error ? "fail" : "pass",
                 errors: expansion.error ? [expansion.error] : [],
@@ -135,7 +137,14 @@ export class SlytherInstanceChecker {
                 const record = this.manifest.instances[key];
 
                 if (state.segments === undefined) {
-                    this.manifest.instances[key] = { ...SlytherInstanceChecker.emptyRecord(), specHash: this.specHashOf(instance), rulesHash: instance.rules, ...parent };
+                    this.manifest.instances[key] = {
+                        ...SlytherInstanceChecker.emptyRecord(),
+                        specHash: this.specHashOf(instance),
+                        rulesHash: instance.rules,
+                        spec: this.specTextOf(instance),
+                        rules: instance.rulesText,
+                        ...parent,
+                    };
                     report.push({ key, status: "missing", errors: [], ...parent });
                 } else if (record?.result === "fail") {
                     report.push({ key, status: "fail", reason: "unchanged since it failed", errors: record.errors, ...parent });
@@ -152,7 +161,7 @@ export class SlytherInstanceChecker {
             let status: SlytherInstanceChecker["entry"]["status"];
 
             if (work.operation) {
-                await this.perform(work.operation, instance, key, []);
+                await this.perform(work.operation, instance, key, [], work.reason);
                 state = await this.relocate(key, instance, states);
                 verdict =
                     state.segments === undefined
@@ -166,7 +175,7 @@ export class SlytherInstanceChecker {
 
             if (!verdict.pass && this.options.compile && state.segments !== undefined && this.has(instance.kind, "update")) {
                 this.options.log?.(`${key}: failed evaluation, updating to fix:\n${verdict.errors.map((error) => `    - ${error}`).join("\n")}`);
-                await this.perform("update", instance, key, verdict.errors);
+                await this.perform("update", instance, key, verdict.errors, work.reason);
                 state = await this.relocate(key, instance, states);
                 verdict = state.segments === undefined ? { pass: false, errors: ["the update removed it"] } : await this.evaluate(instance, key, state);
                 status = verdict.pass ? (work.done === "pass" ? "fixed" : work.done) : "fail";
@@ -178,6 +187,8 @@ export class SlytherInstanceChecker {
             this.manifest.instances[key] = {
                 specHash: seen ? this.specHashOf(instance) : this.manifest.instances[key]!.specHash,
                 rulesHash: seen ? instance.rules : (this.manifest.instances[key]!.rulesHash ?? instance.rules),
+                spec: seen ? this.specTextOf(instance) : this.manifest.instances[key]!.spec,
+                rules: seen ? instance.rulesText : this.manifest.instances[key]!.rules,
                 ...parent,
                 ...(state.locatedWith ? { locatedWith: state.locatedWith } : {}),
                 contentHash: state.contentHash ?? "",
@@ -204,9 +215,10 @@ export class SlytherInstanceChecker {
     }
 
     /**
-     * Brings a manifest written before the rules of a kind were recorded forward: every instance is
-     * taken to have been brought in line with the rules as they are now, so what it already complies
-     * with is not updated again, and only a change made from here on is noticed.
+     * Brings a manifest written before the rules of a kind, or the text of a declaration, were recorded
+     * forward: every instance is taken to have been brought in line with the rules and the prose as they
+     * are now, so what it already complies with is not updated again, only a change made from here on is
+     * noticed, and the first update of an instance carries no diff rather than one against nothing.
      */
     private async migrate(instances: Map<string, SlytherInstanceChecker["instance"]>): Promise<void> {
         if (this.manifest.version >= SlytherInstanceManifest.VERSION) {
@@ -214,7 +226,14 @@ export class SlytherInstanceChecker {
         }
 
         for (const [key, record] of Object.entries(this.manifest.instances)) {
-            record.rulesHash = instances.get(key)?.rules ?? "";
+            const instance = instances.get(key);
+
+            if (this.manifest.version < 2) {
+                record.rulesHash = instance?.rules ?? "";
+            }
+
+            record.spec = instance ? this.specTextOf(instance) : "";
+            record.rules = instance?.rulesText ?? "";
         }
 
         await this.manifest.save();
@@ -393,6 +412,23 @@ export class SlytherInstanceChecker {
     }
 
     /**
+     * The declaration of the instance and of everything it leans on as text: what the spec hash covers,
+     * written out, so what an update is brought in line with can be diffed against what it was last
+     * brought in line with.
+     */
+    private specTextOf(instance: { artifact: SlytherArtifact; leans: string[] }): string {
+        const leans = instance.leans.map((reference) => {
+            const artifact = this.declared.get(reference);
+
+            return artifact
+                ? `(leans on ${artifact.artifact} ${artifact.name})\n${SlytherInstanceChecker.specOf(artifact)}`
+                : `(leans on ${reference}, which is not declared)`;
+        });
+
+        return [SlytherInstanceChecker.specOf(instance.artifact), ...leans].join("\n\n");
+    }
+
+    /**
      * What the instance references, for the generator to read, one level deep: the rules of a kind, the
      * prose of a plain artifact, and the args, the prose and the signature of an instance.
      */
@@ -489,6 +525,7 @@ export class SlytherInstanceChecker {
         expansions: Map<string, { emitted: string[] }>,
     ): Map<string, SlytherInstanceChecker["instance"]> {
         const rules = new Map(kinds.map((kind) => [kind.name, kind.scopeHash]));
+        const written = new Map(kinds.map((kind) => [kind.name, kind.artifact.prose]));
         const checkable = new Set(kinds.filter((kind) => kind.operations.length > 0).map((kind) => kind.name));
         const composite = new Set(kinds.filter((kind) => kind.composite).map((kind) => kind.name));
         const parents = new Map([...expansions].flatMap(([parent, expansion]) => expansion.emitted.map((key) => [key, parent] as const)));
@@ -505,6 +542,7 @@ export class SlytherInstanceChecker {
                     name: artifact.name,
                     artifact,
                     rules: rules.get(artifact.artifact) ?? "",
+                    rulesText: written.get(artifact.artifact) ?? "",
                     references: [],
                     leans: [],
                     composite: composite.has(artifact.artifact),
@@ -763,8 +801,17 @@ export class SlytherInstanceChecker {
      * param and what the instance must do, as declared. The substitution alone is not enough, since
      * nothing makes the markdown mention a param, and one that never does would otherwise run without
      * ever being told which instance it is working on.
+     *
+     * An update is told what changed as well, so it is not left to find it by reading code that was
+     * written against the declaration as it was before.
      */
-    private async perform(name: "create" | "update", instance: { kind: string; name: string; artifact: SlytherArtifact }, key: string, errors: string[]): Promise<void> {
+    private async perform(
+        name: "create" | "update",
+        instance: SlytherInstanceChecker["instance"],
+        key: string,
+        errors: string[],
+        reason?: string,
+    ): Promise<void> {
         const operation = this.built.operations[`${instance.kind}::${name}`]!;
         const args = SlytherInstanceChecker.argsOf(operation, instance, key, errors);
 
@@ -805,6 +852,12 @@ export class SlytherInstanceChecker {
             "",
         ].join("\n");
 
+        const changed = name === "update" ? this.changedOf(key, instance, reason) : [];
+
+        if (changed.length > 0) {
+            markdown = `${markdown}\n${changed.join("\n")}`;
+        }
+
         const context = SlytherInstanceChecker.section("## What it references", this.contextOf(instance, "###"));
 
         if (context.length > 0) {
@@ -817,6 +870,44 @@ export class SlytherInstanceChecker {
 
         this.options.say?.(`${key}: ${verb} with the llm (${operation.entry})`);
         await this.generator.execute(markdown, this.cwd);
+    }
+
+    /**
+     * Why the instance is being updated: what triggered it and, against what it was last brought in line
+     * with, the diff of its declaration and of the rules of its kind.
+     *
+     * The code was written against the minus side of those diffs, so where it still says what a `-` line
+     * took away, the code is what is wrong, and saying so is what keeps an update from reading the code
+     * as evidence of what is meant and leaving it as it found it. Nothing is said when there is no text
+     * to diff against, which is every instance a manifest written before it was recorded knows.
+     */
+    private changedOf(key: string, instance: SlytherInstanceChecker["instance"], reason: string | undefined): string[] {
+        const record = this.manifest.instances[key];
+
+        if (!record || reason === undefined) {
+            return [];
+        }
+
+        const spec = record.spec === undefined ? [] : StringUtils.diff(record.spec, this.specTextOf(instance));
+        const rules = record.rules === undefined ? [] : StringUtils.diff(record.rules, instance.rulesText);
+        const fenced = (lines: string[]): string[] => ["```diff", ...lines, "```", ""];
+
+        return [
+            "## Why it is being updated",
+            "",
+            reason,
+            "",
+            ...(spec.length + rules.length === 0
+                ? []
+                : [
+                      "The prose rules over the code. The code was written against what the `-` lines below say, so",
+                      "wherever it still says one of them, the code is what is wrong, never the prose. Bring all of it",
+                      "in line, and leave the rest of the code alone.",
+                      "",
+                  ]),
+            ...SlytherInstanceChecker.section("### What changed in what it must do", spec.length === 0 ? [] : fenced(spec)),
+            ...SlytherInstanceChecker.section(`### What changed in the rules of every ${instance.kind}`, rules.length === 0 ? [] : fenced(rules)),
+        ];
     }
 
     /**
@@ -1000,6 +1091,8 @@ export class SlytherInstanceChecker {
         artifact: SlytherArtifact;
         /** The scope hash of its kind: the rules every instance of it must follow, so a change to them is noticed. */
         rules: string;
+        /** The rules of its kind as written, so an update may be shown what changed in them. */
+        rulesText: string;
         references: string[];
         leans: string[];
         composite: boolean;

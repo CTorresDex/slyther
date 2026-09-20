@@ -366,7 +366,7 @@ describe("SlytherInstanceChecker brings what changed in line", () => {
 
         const read2 = JSON.parse(await readFile(path, "utf-8"));
 
-        expect(read2.version).toBe(2);
+        expect(read2.version).toBe(3);
         expect(read2.instances["k:A"].rulesHash).toMatch(/^[0-9a-f]{64}$/);
 
         await writeFile(join(root, "main.sly"), SPEC().replace("rules of k", "the stricter rules of k"));
@@ -437,6 +437,65 @@ describe("SlytherInstanceChecker references", () => {
 
         expect(generator.executed[0]).toContain("## The k to update: B\n\n### Its params\n\n- id: B\n\n### What it must do\n\nuses #{A}");
         expect(generator.executed[0]).not.toContain("- errors:");
+    });
+
+    const MENDING = '    operation update (id: string, errors: string) {\n        llm mend { mends it }\n    }\n';
+    const mending = (spec: string) =>
+        spec.replace("    operation update (id: string, errors: string): deterministic {\n        deterministic fix { replaces BAD }\n    }\n", MENDING);
+
+    test("an llm update is told what changed in the declaration, as a diff against what it was last brought in line with", async () => {
+        await writeFile(join(root, "main.sly"), mending(SPEC()));
+        await compile();
+        await writeFile(join(root, "main.sly"), mending(SPEC()).replace("k B { uses #{A} }", "k B { uses #{A} and shouts }"));
+
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await compile(generator);
+
+        expect(generator.executed[0]).toContain("## Why it is being updated\n\nits spec changed\n");
+        expect(generator.executed[0]).toContain("### What changed in what it must do\n\n```diff\n- uses #{A}\n+ uses #{A} and shouts\n```");
+        expect(generator.executed[0]).toContain("the code is what is wrong, never the prose");
+    });
+
+    test("an llm update is told what changed in the rules of its kind", async () => {
+        await writeFile(join(root, "main.sly"), mending(SPEC()));
+        await compile();
+        await writeFile(join(root, "main.sly"), mending(SPEC()).replace("rules of k", "the stricter rules of k"));
+
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await compile(generator);
+
+        expect(generator.executed[0]).toContain("## Why it is being updated\n\nthe rules of its kind changed\n");
+        expect(generator.executed[0]).toContain("### What changed in the rules of every k\n\n```diff\n- rules of k\n+ the stricter rules of k\n```");
+        expect(generator.executed[0]).not.toContain("What changed in what it must do");
+    });
+
+    test("an llm update told nothing changed in the prose carries the reason and no diff", async () => {
+        await writeFile(join(root, "main.sly"), mending(SPEC()));
+        await compile();
+        await write("B.txt", "edited by hand\n");
+
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await compile(generator);
+
+        expect(generator.executed[0]).toContain("## Why it is being updated\n\nits code changed\n");
+        expect(generator.executed[0]).not.toContain("```diff");
+    });
+
+    test("the declaration recorded covers what the instance leans on, so a diff shows what changed there", async () => {
+        const spec = mending(`${SPEC()}${RULE}`).replace("k B { uses #{A} }", "k B { follows #{R} }");
+
+        await writeFile(join(root, "main.sly"), spec);
+        await compile();
+        await writeFile(join(root, "main.sly"), spec.replace("be nice", "be kind"));
+
+        const generator = new FakeGenerator(SCRIPTS);
+
+        await compile(generator);
+
+        expect(generator.executed[0]).toContain("```diff\n  follows #{R}\n  \n  (leans on rule R)\n- be nice\n+ be kind\n```");
     });
 
     test("editing what an instance leans on counts as a change of its spec", async () => {

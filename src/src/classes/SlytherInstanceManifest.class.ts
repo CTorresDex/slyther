@@ -6,12 +6,12 @@ export class SlytherInstanceManifest {
     /** The name of the manifest inside the instances folder. */
     static readonly FILE = "manifest.json";
     /** What a manifest written by this version records, so an older one can be brought forward on load. */
-    static readonly VERSION = 2;
+    static readonly VERSION = 3;
 
     private constructor(
         /** Where the manifest is written. */
         private readonly path: string,
-        /** The version the manifest on disk was written with: 1 is one written before the rules of a kind were recorded. */
+        /** The version the manifest on disk was written with: 1 is before the rules of a kind were recorded, 2 before their text was. */
         readonly version: number,
         /** Every instance checked, keyed by `kind:name`: what deciding to check it again needs. */
         readonly instances: Record<
@@ -21,6 +21,10 @@ export class SlytherInstanceManifest {
                 specHash: string;
                 /** The hash of the rules of its kind, so a change to them is noticed by every instance of it. Absent in a manifest written before version 2. */
                 rulesHash?: string;
+                /** The declaration it was last brought in line with, as text, so an update is told what changed. Absent in a manifest written before version 3. */
+                spec?: string;
+                /** The rules of its kind it was last brought in line with, as text, so an update is told what changed. Absent in a manifest written before version 3. */
+                rules?: string;
                 /** The instance whose expand emitted it, when it was not declared by hand. */
                 parent?: string;
                 /** The args locate was run with, when it takes more than the id, so the instance can be found again once its declaration is gone or its args changed. */

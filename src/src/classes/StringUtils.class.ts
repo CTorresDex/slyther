@@ -54,4 +54,70 @@ export class StringUtils {
 
         return entries.filter((entry) => entry.trim().length > 0);
     }
+
+    /**
+     * The two texts as a line diff: `- ` what only the first holds, `+ ` what only the second holds,
+     * and `  ` what both hold, with every run of unchanged lines farther than the context from a change
+     * collapsed into a single `  ...`. Empty when the texts are the same.
+     */
+    static diff(before: string, after: string, context = 3): string[] {
+        if (before === after) {
+            return [];
+        }
+
+        const from = before.split("\n");
+        const to = after.split("\n");
+        const common: number[][] = Array.from({ length: from.length + 1 }, () => new Array<number>(to.length + 1).fill(0));
+
+        for (let line = from.length - 1; line >= 0; line--) {
+            for (let other = to.length - 1; other >= 0; other--) {
+                common[line]![other] =
+                    from[line] === to[other] ? common[line + 1]![other + 1]! + 1 : Math.max(common[line + 1]![other]!, common[line]![other + 1]!);
+            }
+        }
+
+        const lines: string[] = [];
+        let line = 0;
+        let other = 0;
+
+        while (line < from.length && other < to.length) {
+            if (from[line] === to[other]) {
+                lines.push(`  ${from[line]}`);
+                line += 1;
+                other += 1;
+            } else if (common[line + 1]![other]! >= common[line]![other + 1]!) {
+                lines.push(`- ${from[line]}`);
+                line += 1;
+            } else {
+                lines.push(`+ ${to[other]}`);
+                other += 1;
+            }
+        }
+
+        for (; line < from.length; line++) {
+            lines.push(`- ${from[line]}`);
+        }
+
+        for (; other < to.length; other++) {
+            lines.push(`+ ${to[other]}`);
+        }
+
+        return StringUtils.around(lines, context);
+    }
+
+    /** The diff lines within the context of a change, every longer run of unchanged ones standing as one `  ...`. */
+    private static around(lines: string[], context: number): string[] {
+        const near = lines.map((_, index) => lines.some((line, at) => !line.startsWith("  ") && Math.abs(at - index) <= context));
+        const kept: string[] = [];
+
+        for (const [index, line] of lines.entries()) {
+            if (near[index]) {
+                kept.push(line);
+            } else if (near[index - 1] ?? true) {
+                kept.push("  ...");
+            }
+        }
+
+        return kept;
+    }
 }
