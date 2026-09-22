@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { SlytherFolderSource } from "./SlytherFolderSource.class.ts";
+import { SlytherRole } from "./SlytherRole.class.ts";
 
 export class SlytherArtifact {
     readonly hash: string;
@@ -33,7 +34,9 @@ export class SlytherArtifact {
                 [
                     artifact,
                     name,
+                    // Who does the work is not what the work is: a role only reaches a hash where it judges, through what evaluates.
                     args
+                        .filter((arg) => !(arg.kind === "string" && arg.name === SlytherRole.BY))
                         .map((arg) => `${arg.name}=${arg.kind}:${String(arg.value)}${arg.optional ? "?" : ""}`)
                         .join(","),
                     qualifiers.join(","),

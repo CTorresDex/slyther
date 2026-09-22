@@ -64,7 +64,7 @@ describe("SlytherVerifier", () => {
         expect(await verifier.verify({ operation: "list", script: ok, runtime, locate })).toBeNull();
         expect(await verifier.verify({ operation: "list", script: empty, runtime, locate })).toBeNull();
         expect(await verifier.verify({ operation: "list", script: bad, runtime, locate })).toBe(
-            'list-mismatch.sh printed the id "b" but locate.sh does not find it: list must print the ids locate takes.',
+            'list-mismatch.sh printed the id "b" but locate.sh does not find it given "b": list must print the ids locate takes, and locate must read them as they are given.',
         );
     });
 
@@ -103,6 +103,18 @@ describe("SlytherVerifier", () => {
         );
     });
 
+    test("signature and uses must exit 0 for an id list prints, and may exit 1 for the sample", async () => {
+        const list = { script: await write("list.sh", "echo a\n"), runtime };
+        const missing = await write("signature-missing.sh", "echo 'not found' >&2; exit 1\n");
+        const verifier = new SlytherVerifier(root);
+
+        expect(await verifier.verify({ operation: "signature", script: missing, runtime, list })).toBe(
+            'signature-missing.sh must exit 0 given "a", which list prints so it exists, but exited 1:\nnot found\n',
+        );
+        expect(await verifier.verify({ operation: "uses", script: missing, runtime, list })).toStartWith('signature-missing.sh must exit 0 given "a"');
+        expect(await verifier.verify({ operation: "signature", script: missing, runtime })).toBeNull();
+    });
+
     test("uses must print kind:id key lines", async () => {
         const ok = await write("uses.sh", "echo 'class:User name'\necho 'class:Logger *'\necho 'class:Form **'\n");
         const bad = await write("uses-bad.sh", "echo 'User name'\n");
@@ -129,5 +141,61 @@ describe("SlytherVerifier expand", () => {
         expect(await verifier.verify({ operation: "expand", script: failing, runtime, expand: { args: ["sample"], validate } })).toBe(
             'expand-fail.sh must exit 0 given "sample" but exited 2:\nnope\n',
         );
+    });
+});
+
+describe("SlytherVerifier with the args of a declared instance", () => {
+    // A research at research/doc.md: list prints "doc", and its instance runs locate with "doc" "research/doc.md".
+    const argsOf = (operation: string, id: string) => (id === "doc" ? [id, "research/doc.md"] : undefined);
+
+    beforeAll(async () => {
+        await Bun.write(join(root, "research", "doc.md"), "the doc");
+    });
+
+    test("a locate that reads the wrong arg fails, though a sample would have passed it", async () => {
+        const list = { script: await write("research-list.sh", "echo doc\n"), runtime };
+        // Takes the path from $1, the id, instead of $2.
+        const script = await write("research-locate-wrong.sh", '[ -f "$1" ] && echo "$1" && exit 0\nexit 1\n');
+
+        expect(await new SlytherVerifier(root).verify({ operation: "locate", script, runtime, params: 2, list })).toBeNull();
+        expect(await new SlytherVerifier(root).verify({ operation: "locate", script, runtime, params: 2, list, argsOf })).toStartWith(
+            'research-locate-wrong.sh must exit 0 given "doc" "research/doc.md", the args of "doc", which list prints so it exists, but exited 1',
+        );
+    });
+
+    test("a locate that asks for an arg it is never given fails", async () => {
+        const list = { script: await write("server-list.sh", "echo doc\n"), runtime };
+        // The operation gives the id alone, but the script wants a second one.
+        const script = await write("server-locate.sh", '[ -z "$2" ] && echo "usage: <id> <language>" >&2 && exit 1\necho "$1"\n');
+        const idOnly = (operation: string, id: string) => [id];
+
+        expect(await new SlytherVerifier(root).verify({ operation: "locate", script, runtime, params: 1, list, argsOf: idOnly })).toStartWith(
+            'server-locate.sh must exit 0 given "doc", the args of "doc"',
+        );
+    });
+
+    test("a locate that reads its args as given passes", async () => {
+        const list = { script: await write("research-list-ok.sh", "echo doc\n"), runtime };
+        const script = await write("research-locate-ok.sh", '[ -f "$2" ] && echo "$2" && exit 0\nexit 1\n');
+
+        expect(await new SlytherVerifier(root).verify({ operation: "locate", script, runtime, params: 2, list, argsOf })).toBeNull();
+    });
+
+    test("list runs locate with the args of the instance of the id it prints", async () => {
+        const list = await write("research-list-check.sh", "echo doc\n");
+        const wrong = { script: await write("research-locate-wrong-2.sh", '[ -f "$1" ] && echo "$1" && exit 0\nexit 1\n'), runtime };
+        const right = { script: await write("research-locate-right.sh", '[ -f "$2" ] && echo "$2" && exit 0\nexit 1\n'), runtime };
+
+        expect(await new SlytherVerifier(root).verify({ operation: "list", script: list, runtime, locate: right, argsOf })).toBeNull();
+        expect(await new SlytherVerifier(root).verify({ operation: "list", script: list, runtime, locate: wrong, argsOf })).toStartWith(
+            'research-list-check.sh printed the id "doc" but research-locate-wrong-2.sh does not find it given "doc" "research/doc.md"',
+        );
+    });
+
+    test("an id no instance declares is run with samples, and may be missing", async () => {
+        const list = { script: await write("orphan-list.sh", "echo orphan\n"), runtime };
+        const script = await write("orphan-locate.sh", '[ -f "$2" ] && echo "$2" && exit 0\nexit 1\n');
+
+        expect(await new SlytherVerifier(root).verify({ operation: "locate", script, runtime, params: 2, list, argsOf })).toBeNull();
     });
 });

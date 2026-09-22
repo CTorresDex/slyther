@@ -1,8 +1,7 @@
 // Imports
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { ClaudeCLIGenerator } from "./ClaudeCLIGenerator.class.ts";
-import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
+import { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 import { SlytherArtifactBuilder } from "./SlytherArtifactBuilder.class.ts";
 import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
@@ -10,6 +9,8 @@ import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import { SlytherInstanceChecker } from "./SlytherInstanceChecker.class.ts";
 import { SlytherInstanceManifest } from "./SlytherInstanceManifest.class.ts";
 import { SlytherParser } from "./SlytherParser.class.ts";
+import { SlytherProviders } from "./SlytherProviders.class.ts";
+import { SlytherRole } from "./SlytherRole.class.ts";
 import { SlytherRunScript } from "./SlytherRunScript.class.ts";
 import { SlytherScript } from "./SlytherScript.class.ts";
 import { SlytherTracedGenerator } from "./SlytherTracedGenerator.class.ts";
@@ -27,6 +28,8 @@ export class SlytherProject {
     static readonly ARTIFACTS = "artifacts";
     /** Where what the check found about every artifact is recorded, relative to the output folder. */
     static readonly INSTANCES = "instances";
+    /** What every alias of a role resolved to the last build, in the build folder, to say when it resolves to another. */
+    static readonly PINNED = "roles.json";
 
     /** What writes the scripts of the deterministic steps, traced when the project is verbose. */
     private readonly generator: SlytherGenerator;
@@ -36,7 +39,7 @@ export class SlytherProject {
     constructor(
         /** The folder the slyther files live in. */
         readonly root: string,
-        generator: SlytherGenerator = new ClaudeCLIGenerator(),
+        generator: SlytherGenerator = new SlytherProviders(),
         /** Where the build reports what it does: log prints a finished line, say names what it is waiting on. */
         progress: { log: (line: string) => void; say: (label: string) => void } = { log: () => {}, say: () => {} },
         /** verbose: every prompt sent to the llm and every reply are logged. */
@@ -77,13 +80,15 @@ export class SlytherProject {
     /**
      * Compiles the project: parses it, builds the operations of its kinds, then brings every instance
      * its scripts declare in line with its declaration, creating what is missing, updating what is
-     * outdated or fails, and evaluating it. Returns what it did to every file and to every instance.
+     * outdated or fails, and evaluating it, up to fixes times. Returns what it did to every file and to
+     * every instance.
      */
-    async build(options: { max?: number } = {}): Promise<{
+    async build(options: { max?: number; fixes?: number } = {}): Promise<{
         files: { path: string; status: "built" | "rebuilt" | "kept" | "removed" }[];
         instances: Awaited<ReturnType<SlytherProject["checkInstances"]>>;
     }> {
-        const { parsed, path } = await this.parse();
+        const { parsed: declared, path } = await this.parse();
+        const parsed = await this.cast(declared);
         const files = [{ path, status: "built" as const }, ...(await this.buildArtifacts(parsed))];
 
         return { files, instances: await this.checkInstances(parsed, { ...options, compile: true }) };
@@ -114,6 +119,7 @@ export class SlytherProject {
             }
         }
 
+
         await mkdir(this.src, { recursive: true });
 
         const report = await new SlytherArtifactBuilder(this.src, this.artifactsDir, this.generator, this.progress).build(
@@ -126,12 +132,86 @@ export class SlytherProject {
     }
 
     /**
+     * Makes sure every role the work of the project asks for is played before any of it is asked for, and
+     * says which roles are played by the standard role of their line because nobody plays them: the roles
+     * of every step and every operation of the kinds, and the ones that write and review the scripts that
+     * run the project. Throws with every problem at once. Then pins who plays each of them, as the
+     * generator resolves it now, and says what every alias resolved to, and when it no longer resolves to
+     * what it did the build before. Returns the parsed script with the roles pinned, which is what every
+     * call of the build asks with and what is recorded.
+     */
+    private async cast(parsed: ParsedSlytherScript): Promise<ParsedSlytherScript> {
+        const kinds = SlytherArtifactKind.of(parsed);
+        const roles = new Set<string>();
+
+        for (const operation of kinds.flatMap((kind) => kind.operations)) {
+            for (const role of [operation.role, ...operation.steps.map((step) => step.role)]) {
+                if (role !== undefined) {
+                    roles.add(role);
+                }
+            }
+        }
+
+        if (SlytherRunScript.of(parsed).length > 0) {
+            roles.add(SlytherRole.WRITERS[0]!);
+            roles.add(SlytherRole.standardOf("judge"));
+        }
+
+        const casts = [...roles].map((role) => SlytherRole.cast(role, parsed.roles));
+        const problems = this.generator.problemsWith(casts);
+
+        if (problems.length > 0) {
+            throw new Error(problems.join("\n"));
+        }
+
+        for (const cast of casts) {
+            if (cast.by && cast.by.role !== cast.role) {
+                this.progress.log(`warning: nobody plays the ${cast.role}, so the ${cast.by.role} does: bind it with @role ${cast.role} to choose who does.`);
+            }
+        }
+
+        const named = [...new Set(casts.flatMap((cast) => (cast.by ? [cast.by.role] : [])))];
+        const pinned = await this.generator.pinRoles(parsed.roles, named);
+        const path = join(this.buildDir, SlytherProject.PINNED);
+        const before: Record<string, string> = JSON.parse(await readFile(path, "utf-8").catch(() => "{}"));
+        const now: Record<string, string> = {};
+
+        for (const role of named) {
+            const asked = parsed.roles.get(role)!;
+
+            for (const [option, value] of Object.entries(pinned.get(role)!.options)) {
+                const original = asked.options[option];
+
+                if (original === undefined || original === value) {
+                    continue;
+                }
+
+                const key = `${asked.provider} ${option}=${original}`;
+                const was = before[key];
+                const judges = SlytherRole.lineOf(role) === "judge";
+
+                now[key] = value;
+                this.progress.log(
+                    was !== undefined && was !== value
+                        ? `${role}: "${original}" now resolves to ${value}, no longer ${was}, so ${judges ? "what it judged is evaluated again" : "what it writes from now on is written by it"}`
+                        : `${role}: "${original}" resolves to ${value}`,
+                );
+            }
+        }
+
+        await mkdir(this.buildDir, { recursive: true });
+        await writeFile(path, `${JSON.stringify({ ...before, ...now }, null, 4)}\n`);
+
+        return new ParsedSlytherScript(parsed.artifacts, parsed.closureHashes, parsed.scopeHashes, parsed.lang, parsed.packages, pinned);
+    }
+
+    /**
      * Builds the operations of the kinds, then checks every instance its scripts declare against its
      * declaration and the rules of its kind, evaluating again only what changed and touching no code.
      * Returns what happened to every instance.
      */
     async check(options: { max?: number } = {}): Promise<Awaited<ReturnType<SlytherProject["checkInstances"]>>> {
-        const { parsed } = await this.parse();
+        const parsed = await this.cast((await this.parse()).parsed);
 
         await this.buildArtifacts(parsed);
 
@@ -141,9 +221,10 @@ export class SlytherProject {
     /**
      * Checks every instance the parsed script declares whose kind has operations with the operations as
      * built, recording what it finds in the instances folder so the next check evaluates only what
-     * changed. With compile, it also creates what is missing and updates what is outdated or fails.
+     * changed. With compile, it also creates what is missing and updates what is outdated or fails, the
+     * latter up to fixes times.
      */
-    async checkInstances(parsed: ParsedSlytherScript, options: { compile?: boolean; max?: number } = {}): Promise<SlytherInstanceChecker["entry"][]> {
+    async checkInstances(parsed: ParsedSlytherScript, options: { compile?: boolean; max?: number; fixes?: number } = {}): Promise<SlytherInstanceChecker["entry"][]> {
         const built = await SlytherArtifactManifest.load(join(this.src, this.artifactsDir, SlytherArtifactManifest.FILE));
         await mkdir(this.src, { recursive: true });
 
@@ -243,7 +324,18 @@ export class SlytherProject {
             return { code: 0, output: markdown };
         }
 
-        return { code: 0, output: await options.execute.execute(markdown, this.src) };
+        const role = record.role ?? SlytherRole.standardOf("write");
+        const { roles } = (await this.parse()).parsed;
+        const asked = SlytherRole.cast(role, roles);
+        const problems = options.execute.problemsWith([asked]);
+
+        if (problems.length > 0) {
+            throw new Error(problems.join("\n"));
+        }
+
+        const cast = SlytherRole.cast(role, await options.execute.pinRoles(roles, asked.by ? [asked.by.role] : []));
+
+        return { code: 0, output: (await options.execute.execute(markdown, this.src, undefined, cast)).text };
     }
 
     /**

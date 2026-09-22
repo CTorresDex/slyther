@@ -3,6 +3,7 @@ import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import { SlytherBuiltinOperation } from "./SlytherBuiltinOperation.class.ts";
 import { SlytherParser } from "./SlytherParser.class.ts";
+import { SlytherRole } from "./SlytherRole.class.ts";
 
 export class SlytherArtifactKind {
     /** The kinds a step may be. */
@@ -15,7 +16,7 @@ export class SlytherArtifactKind {
     private static readonly DEMANDED = "demanded";
     /** The param only a demanded kind takes: what the artifacts that use an instance of it ask of it. */
     private static readonly DEMANDS = { name: "demands", type: "string", optional: false };
-    /** The only configuration a kind or a step may declare. */
+    /** The configuration a kind or a step may declare: the lang of its scripts. */
     private static readonly LANG = "lang";
     /** The param every operation takes first: the name of the instance it is run on. */
     private static readonly ID = { name: "id", type: "string", optional: false };
@@ -32,6 +33,15 @@ export class SlytherArtifactKind {
     /** The operation that makes a kind composite: it prints the declarations an instance is made of. */
     static readonly EXPAND = "expand";
 
+    /**
+     * The folder a kind is built into, which is its name with the `::` of its namespace written as a
+     * dot: a name no kind can hold, since a name is words joined by `::`, and one no file system reads
+     * as anything but a name, which a colon is not on every one of them.
+     */
+    static folderOf(name: string): string {
+        return name.split("::").join(".");
+    }
+
     /** The warnings found while grouping the kind, in the order found. */
     readonly warnings: string[] = [];
 
@@ -44,6 +54,10 @@ export class SlytherArtifactKind {
         readonly scopeHash: string,
         /** The language the kind declares, if any. */
         readonly lang: string | undefined,
+        /** The role the kind declares its work is done by, if any: it reaches the work of its own line only. */
+        readonly by: string | undefined,
+        /** The package the kind was imported from, if it was not declared by the project itself. */
+        readonly packaged: string | undefined,
         /** The shape of every instance of the kind: what its operations are run with, after the implicit id. */
         readonly params: { name: string; type: string; optional: boolean }[],
         /** The operations of the kind, in the order written, then the built-in ones. */
@@ -57,9 +71,50 @@ export class SlytherArtifactKind {
             deterministic: boolean;
             /** Added by Slyther, not written in the script. */
             builtin: boolean;
-            steps: { artifact: SlytherArtifact; closureHash: string; lang?: string }[];
+            /** The role the operation declares its work is done by, if any: it reaches the work of its own line only. */
+            by?: string;
+            /** Who runs the markdown of an operation that is not deterministic: the most demanding role among its llm steps. */
+            role?: string;
+            /** Every step, with the role its work is done by: who writes its script, or who does what its llm step says. */
+            steps: { artifact: SlytherArtifact; closureHash: string; lang?: string; role?: string }[];
         }[],
     ) {}
+
+    /**
+     * The args an operation is run with for an instance, one per param, by the name of the param: id is
+     * the name of the instance, errors is the errors it is run to fix, a param named as an arg of the
+     * instance is the value of that arg, and any other is the prose of the instance, unless it is
+     * optional, which the instance simply did not give. Throws when a param that is not optional gets
+     * nothing.
+     */
+    static argsOf(
+        operation: { kind: string; name: string; params: { name: string; optional: boolean }[] },
+        instance: { name: string; artifact: SlytherArtifact; demands?: string },
+        key: string,
+        errors: string[],
+    ): string[] {
+        return operation.params.map((param) => {
+            const arg = instance.artifact.args.find((candidate) => candidate.name === param.name);
+            const value =
+                param.name === "id"
+                    ? instance.name
+                    : param.name === "errors"
+                      ? errors.join("\n")
+                      : param.name === "demands" && instance.demands !== undefined
+                        ? instance.demands
+                        : arg !== undefined
+                          ? String(arg.value)
+                          : param.optional
+                            ? ""
+                            : instance.artifact.prose;
+
+            if (value === "" && !param.optional && param.name !== "errors") {
+                throw new Error(`${key} gives nothing for the param "${param.name}" of ${operation.kind}::${operation.name}: declare it as an arg, or write it as the prose of the instance.`);
+            }
+
+            return value;
+        });
+    }
 
     /** Groups the artifacts of a parsed script into kinds, throwing when the shape of a kind is wrong. */
     static of(parsed: ParsedSlytherScript): SlytherArtifactKind[] {
@@ -79,7 +134,9 @@ export class SlytherArtifactKind {
                         artifact,
                         parsed.closureHashes.get(keyOf(artifact))!,
                         parsed.scopeHashes.get(keyOf(artifact))!,
-                        SlytherArtifactKind.configOf(artifact, true),
+                        SlytherArtifactKind.configOf(artifact, true).lang,
+                        SlytherArtifactKind.configOf(artifact, true).by,
+                        parsed.packages.get(artifact.name),
                         SlytherArtifactKind.declaredParamsOf(artifact),
                         [],
                     ),
@@ -104,6 +161,7 @@ export class SlytherArtifactKind {
                     params: kind.paramsOf(artifact),
                     deterministic: artifact.qualifiers.includes(SlytherArtifactKind.DETERMINISTIC),
                     builtin: false,
+                    by: SlytherArtifactKind.byOf(artifact),
                     steps: [],
                 });
             }
@@ -134,6 +192,7 @@ export class SlytherArtifactKind {
         for (const kind of kinds.values()) {
             kind.check(parsed);
             kind.addBuiltins(parsed);
+            kind.cast();
         }
 
         for (const artifact of parsed.artifacts) {
@@ -381,9 +440,13 @@ export class SlytherArtifactKind {
     /**
      * The lang of a step: its own, else the kind's, else the script's. Only a deterministic step has
      * one, and one that has none to inherit throws. An llm step declaring one throws too.
+     *
+     * The script is only the last word for a kind the project declares itself: the `@lang` of whoever
+     * imports a package says nothing about the scripts of a kind that package ships, whose rules were
+     * written against a language of their own, so a packaged kind must declare it.
      */
     private langOf(step: SlytherArtifact, parsed: ParsedSlytherScript): { lang?: string } {
-        const own = SlytherArtifactKind.configOf(step, false);
+        const own = SlytherArtifactKind.configOf(step, false).lang;
 
         if (step.artifact === "llm") {
             if (own !== undefined) {
@@ -393,11 +456,13 @@ export class SlytherArtifactKind {
             return {};
         }
 
-        const lang = own ?? this.lang ?? parsed.lang;
+        const lang = own ?? this.lang ?? (this.packaged === undefined ? parsed.lang : undefined);
 
         if (lang === undefined) {
             throw new Error(
-                `Step "${step.name}" has no lang: declare it on the step, on the kind, or with @lang on the project.`,
+                this.packaged === undefined
+                    ? `Step "${step.name}" has no lang: declare it on the step, on the kind, or with @lang on the project.`
+                    : `Step "${step.name}" has no lang: the kind "${this.name}" comes from the package "${this.packaged}", so it must declare it on the step or on the kind, since the @lang of the project does not reach a package.`,
             );
         }
 
@@ -405,11 +470,50 @@ export class SlytherArtifactKind {
     }
 
     /**
-     * The lang declared in the args of a kind or of a step, which must be its only configuration. A kind
-     * declares its params before it, so a type is one of those and not configuration at all.
+     * Gives every step the role its work is done by, and every operation that is not deterministic the
+     * role that runs its markdown, once every step is known. A deterministic step is work that writes,
+     * its script; an llm step judges in evaluate and writes anywhere else. Its own `by` decides, and
+     * must be of the line of its work. A script is mechanical whatever it serves, so it is written by the
+     * scribe unless its own step says otherwise; an llm step takes the `by` of its operation, then of its
+     * kind, whichever is of its line, else the standard role of that line.
+     * The markdown of an operation runs in a single session, so it is played by the most demanding role
+     * any of its llm steps asks for.
      */
-    private static configOf(artifact: SlytherArtifact, params: boolean): string | undefined {
-        let lang: string | undefined;
+    private cast(): void {
+        for (const operation of this.operations) {
+            const judges = SlytherArtifactKind.shortOf(operation.artifact.name) === "evaluate";
+
+            for (const step of operation.steps) {
+                const script = step.artifact.artifact === "deterministic";
+                const line = !script && judges ? "judge" : "write";
+                const own = SlytherArtifactKind.configOf(step.artifact, false).by;
+
+                if (own !== undefined && SlytherRole.lineOf(own) !== line) {
+                    throw new Error(
+                        `Step "${step.artifact.name}" is done by the ${own}, who ${SlytherRole.lineOf(own) === "judge" ? "judges" : "writes"}, but its work is to ${script ? "be written as a script" : line === "judge" ? "judge" : "write"}: it takes one of ${SlytherRole.rolesOf(line).join(", ")}.`,
+                    );
+                }
+
+                const inherited = script ? undefined : [operation.by, this.by].find((by) => by !== undefined && SlytherRole.lineOf(by) === line);
+
+                step.role = own ?? inherited ?? (script ? SlytherRole.WRITERS[0]! : SlytherRole.standardOf(line));
+            }
+
+            const llm = operation.steps.filter((step) => step.artifact.artifact === "llm").map((step) => step.role!);
+
+            if (!operation.deterministic && llm.length > 0) {
+                operation.role = llm.reduce((most, role) => (SlytherRole.rankOf(role) > SlytherRole.rankOf(most) ? role : most));
+            }
+        }
+    }
+
+    /**
+     * The configuration declared in the args of a kind or of a step: the lang of its scripts and the role
+     * its work is done by. A kind declares its params before it, so a type is one of those and not
+     * configuration at all.
+     */
+    private static configOf(artifact: SlytherArtifact, params: boolean): { lang?: string; by?: string } {
+        const config: { lang?: string; by?: string } = {};
 
         for (const arg of artifact.args) {
             if (arg.kind === "type") {
@@ -426,14 +530,37 @@ export class SlytherArtifactKind {
                 );
             }
 
-            if (arg.name !== SlytherArtifactKind.LANG || arg.kind !== "string") {
-                throw new Error(`Unknown configuration "${arg.name}" of "${artifact.name}": the only configuration is lang.`);
+            if (arg.kind === "string" && arg.name === SlytherRole.BY) {
+                config.by = SlytherArtifactKind.roleIn(artifact, String(arg.value));
+                continue;
             }
 
-            lang = String(arg.value);
+            if (arg.name !== SlytherArtifactKind.LANG || arg.kind !== "string") {
+                throw new Error(`Unknown configuration "${arg.name}" of "${artifact.name}": the configuration is lang and by.`);
+            }
+
+            config.lang = String(arg.value);
         }
 
-        return lang;
+        return config;
+    }
+
+    /** The role an operation declares its work is done by, among the params it narrows to. */
+    private static byOf(artifact: SlytherArtifact): string | undefined {
+        const by = artifact.args.find((arg) => arg.kind === "string" && arg.name === SlytherRole.BY);
+
+        return by === undefined ? undefined : SlytherArtifactKind.roleIn(artifact, String(by.value));
+    }
+
+    /** The role a `by` names, which must be one of the roles. */
+    private static roleIn(artifact: SlytherArtifact, role: string): string {
+        if (!SlytherRole.isRole(role)) {
+            throw new Error(
+                `"${artifact.name}" is done by "${role}", which is not a role: the roles that write are ${SlytherRole.WRITERS.join(", ")}, and the ones that judge are ${SlytherRole.JUDGES.join(", ")}.`,
+            );
+        }
+
+        return role;
     }
 
     /** The params a kind declares: the types among its args, which are the shape of every instance of it. */
@@ -449,6 +576,10 @@ export class SlytherArtifactKind {
                 throw new Error(
                     `Kind "${artifact.name}" declares the param "${arg.name}", which every kind has already: id is the name of the instance and errors is what an update is run to fix.`,
                 );
+            }
+
+            if (arg.name === SlytherRole.BY) {
+                throw new Error(`Kind "${artifact.name}" declares the param "${SlytherRole.BY}", which names the role its work is done by: name the param otherwise.`);
             }
 
             if (params.some((param) => param.name === arg.name)) {
@@ -489,8 +620,12 @@ export class SlytherArtifactKind {
                 );
             }
 
+            if (arg.kind === "string" && arg.name === SlytherRole.BY) {
+                continue;
+            }
+
             if (arg.kind !== "param") {
-                throw new Error(`Argument "${arg.name}" of "${artifact.name}" is configuration, which only a kind or a step declares.`);
+                throw new Error(`Argument "${arg.name}" of "${artifact.name}" is configuration, which only a kind or a step declares, save the by of an operation.`);
             }
 
             const param = available.find((candidate) => candidate.name === arg.name);

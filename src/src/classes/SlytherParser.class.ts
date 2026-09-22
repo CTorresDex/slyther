@@ -1,11 +1,12 @@
 // Imports
 import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import { SlytherClosureHasher } from "./SlytherClosureHasher.class.ts";
 import { SlytherFolderSource } from "./SlytherFolderSource.class.ts";
+import { SlytherRole } from "./SlytherRole.class.ts";
 import type { SlytherScript } from "./SlytherScript.class.ts";
 import { SlytherSourceMap } from "./SlytherSourceMap.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
@@ -31,14 +32,26 @@ export class SlytherParser {
     /** The name of a script declared with `@run` and no name. */
     static readonly RUN_DEFAULT = "default";
     private static readonly IMPORT = /^\s*@import\s+["']([^"']+)["']\s*$/d;
+    /**
+     * What an `@import` writes to name a package instead of a path: a bare name. Anything with a
+     * separator, a dot or a drive is a path, so a package is never confused with one.
+     */
+    private static readonly PACKAGE = /^[A-Za-z_][\w-]*$/;
+    /** Where a project installs its packages, relative to its root, and the entry point of one. */
+    static readonly PACKAGES = join(".slyther", "packages");
+    static readonly PACKAGE_ENTRY = "main.sly";
     private static readonly LANG = /^\s*@lang\s+["']([^"']+)["']\s*$/;
+    /** `@role name "provider" (options)`: who plays a role, the options optional. */
+    private static readonly ROLE = /^\s*@role\s+(\S+)\s+["']([^"']+)["']\s*(?:\((.*)\))?\s*$/;
+    /** `key: "value"`: an option of a `@role`, always a quoted string, since it is handed to the provider as it is. */
+    private static readonly OPTION = /^\s*([A-Za-z_][\w-]*)\s*:\s*(?:"([^"]*)"|'([^']*)')\s*$/;
     private static readonly USE = /^\s*@use\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*$/;
     /**
      * `kind name (args): qualifiers { tail`: the args, the qualifiers and the body are optional, the
      * tail is whatever follows the brace on the same line.
      */
     private static readonly DECLARATION = new RegExp(
-        String.raw`^\s*([A-Za-z_][\w-]*)\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?` + SlytherParser.BODY,
+        String.raw`^\s*([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s+([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?` + SlytherParser.BODY,
         "d",
     );
     /** `kind (args) {`: a block opened with a kind but no name. */
@@ -80,7 +93,15 @@ export class SlytherParser {
     private kinds = new Set<string>();
     private implicit = new Set<string>();
     private imported = new Set<string>();
+    /** The package every declaration read came from, keyed by its qualified name. */
+    private packaged = new Map<string, string>();
+    /** The package being read, kept while what an `@import` of a package pulls in is scanned. */
+    private owner: string | undefined;
+    /** The folder the packages of the project are installed in. */
+    private packages = "";
     private lang: string | undefined;
+    /** Who plays every role the project binds with `@role`, keyed by the role. */
+    private roles = new Map<string, SlytherRole["binding"]>();
     /** The script being read, which the path of a `from` or a `ref` is relative to. */
     private script = "";
     /** The folder the path of a `from` or a `ref` is kept relative to. */
@@ -112,6 +133,8 @@ export class SlytherParser {
             lenient?: boolean;
             /** What a path holds, instead of what the disk does; undefined leaves it to the disk. */
             read?: (path: string) => string | undefined;
+            /** Where the packages are installed; undefined puts them under the folder of the entry point. */
+            packages?: string;
         } = {},
     ) {}
 
@@ -124,7 +147,11 @@ export class SlytherParser {
         this.kinds = new Set(SlytherParser.BUILTIN);
         this.implicit = new Set();
         this.imported = script.path ? new Set([resolve(script.path)]) : new Set();
+        this.packaged = new Map();
+        this.owner = undefined;
+        this.packages = resolve(this.options.packages ?? join(script.path ? dirname(script.path) : process.cwd(), SlytherParser.PACKAGES));
         this.lang = undefined;
+        this.roles = new Map();
         this.base = resolve(base ?? (script.path ? dirname(script.path) : process.cwd()));
         this.emitted = false;
         this.map = new SlytherSourceMap();
@@ -153,7 +180,7 @@ export class SlytherParser {
             reference.target = this.resolve(reference.name, reference.scope);
         }
 
-        return SlytherParser.hashed(artifacts, this.lang);
+        return SlytherParser.hashed(artifacts, this.lang, this.packaged, this.roles);
     }
 
     /**
@@ -173,6 +200,8 @@ export class SlytherParser {
         this.kinds = new Set([...SlytherParser.BUILTIN, ...parsed.artifacts.filter((artifact) => artifact.artifact === "artifact").map((artifact) => artifact.name)]);
         this.implicit = new Set();
         this.imported = new Set();
+        this.packaged = new Map(parsed.packages);
+        this.owner = undefined;
         this.lang = parsed.lang;
         this.emitted = true;
         this.map = new SlytherSourceMap();
@@ -199,16 +228,18 @@ export class SlytherParser {
 
             const [, artifact, name, args, qualifiers, open, tail, mode, file, both] = declaration;
 
+            const kind = this.resolveKind(artifact!, parent.name);
+
             if (artifact === "artifact") {
                 this.fail(`A kind is declared as "@artifact ${name}", not "artifact ${name}".`);
-            } else if (!this.kinds.has(artifact!)) {
-                this.fail(`Unknown artifact "${artifact}" of "${parent.name}::${name}".`);
+            } else if (kind === undefined) {
+                this.fail(this.unknownKind(artifact!, `${parent.name}::${name}`));
             }
 
             index = this.declareAt(
                 lines,
                 index,
-                artifact!,
+                kind ?? artifact!,
                 name!,
                 `${parent.name}::${name}`,
                 parent.name,
@@ -232,13 +263,19 @@ export class SlytherParser {
                 return new SlytherArtifact(declaration.artifact, name, args, this.qualifiersOf(declaration, name), declaration.content, [...references].sort(), declaration.source);
             });
 
-        return { parsed: SlytherParser.hashed([...parsed.artifacts, ...added], parsed.lang), added };
+        return { parsed: SlytherParser.hashed([...parsed.artifacts, ...added], parsed.lang, parsed.packages, parsed.roles), added };
     }
 
-    private static hashed(artifacts: SlytherArtifact[], lang: string | undefined): ParsedSlytherScript {
+    /** The parsed script, its hashes computed from the artifacts alone: who plays a role changes no hash. */
+    private static hashed(
+        artifacts: SlytherArtifact[],
+        lang: string | undefined,
+        packages: Map<string, string>,
+        roles: Map<string, SlytherRole["binding"]>,
+    ): ParsedSlytherScript {
         const hasher = new SlytherClosureHasher();
 
-        return new ParsedSlytherScript(artifacts, hasher.hash(artifacts), hasher.scope(artifacts), lang);
+        return new ParsedSlytherScript(artifacts, hasher.hash(artifacts), hasher.scope(artifacts), lang, packages, roles);
     }
 
     /** The scope a qualified name was declared in: what comes before its last `::`. */
@@ -359,10 +396,12 @@ export class SlytherParser {
             const imported = SlytherParser.IMPORT.exec(line);
 
             if (imported) {
-                const target = resolve(path ? dirname(path) : process.cwd(), imported[1]!);
+                const specifier = imported[1]!;
+                const owner = SlytherParser.PACKAGE.test(specifier) ? specifier : undefined;
+                const target = owner ? join(this.packages, owner, SlytherParser.PACKAGE_ENTRY) : resolve(path ? dirname(path) : process.cwd(), specifier);
 
                 this.map.paths.push({ file: path, line: index, ...SlytherParser.spanOf(imported, 1)!, directive: "import", path: target });
-                this.import(target, imported[1]!, path);
+                this.import(target, specifier, path, owner);
                 this.script = path;
                 continue;
             }
@@ -376,6 +415,18 @@ export class SlytherParser {
                 }
 
                 this.lang = lang[1]!;
+                continue;
+            }
+
+            const role = SlytherParser.ROLE.exec(line);
+
+            if (role) {
+                this.bind(role[1]!, role[2]!, role[3], path, index);
+                continue;
+            }
+
+            if (/^\s*@role\b/.test(line)) {
+                this.fail(`"${line.trim()}" is not a role: write it as @role name "provider" (option: "value", ...).`);
                 continue;
             }
 
@@ -393,8 +444,8 @@ export class SlytherParser {
                     index,
                     "artifact",
                     name!,
-                    name!,
-                    "",
+                    scope ? `${scope}::${name}` : name!,
+                    scope,
                     this.groupedArgsOf(`The kind "${name}"`, "@artifact", params, config),
                     qualifiers ?? "",
                     this.bodyOf(open, tail, mode, file, both, name!),
@@ -445,16 +496,18 @@ export class SlytherParser {
             const [, artifact, name, args, qualifiers, open, tail, mode, file, both] = declaration;
             const qualified = scope ? `${scope}::${name}` : name!;
 
+            const declared = this.resolveKind(artifact!, scope);
+
             if (artifact === "artifact") {
                 this.fail(`A kind is declared as "@artifact ${name}", not "artifact ${name}".`);
-            } else if (!this.kinds.has(artifact!)) {
-                this.fail(`Unknown artifact "${artifact}" of "${qualified}".`);
+            } else if (declared === undefined) {
+                this.fail(this.unknownKind(artifact!, qualified));
             }
 
             index = this.declareAt(
                 lines,
                 index,
-                artifact!,
+                declared ?? artifact!,
                 name!,
                 qualified,
                 scope,
@@ -550,11 +603,11 @@ export class SlytherParser {
         this.declare(qualified, artifact, scope, args, qualifiers, where);
 
         if (artifact === "artifact") {
-            this.kinds.add(name);
+            this.kinds.add(qualified);
         }
 
         if (!where.directive) {
-            this.map.references.push({ file: where.file, line: index, ...where.kind, name: artifact, scope: "", owner: qualified, role: "kind" });
+            this.map.references.push({ file: where.file, line: index, ...where.kind, name: artifact, scope, owner: qualified, role: "kind" });
         }
 
         for (const entry of where.entries) {
@@ -797,10 +850,62 @@ export class SlytherParser {
         }
 
         this.declarations.set(name, { artifact, args, qualifiers, content: "", scope, where });
+
+        if (this.owner !== undefined) {
+            this.packaged.set(name, this.owner);
+        }
     }
 
-    /** Reads the script at the resolved path into this one, once, however many times it is imported. */
-    private import(resolved: string, target: string, path: string): void {
+    /**
+     * Reads the script at the resolved path into this one, once, however many times it is imported.
+     * A package keeps its name while everything it pulls in is read, so whatever it declares is known
+     * to be its, however many relative imports away it was written.
+     */
+    /**
+     * Records who plays the role, as a `@role` line declares it: only the project binds roles, never a
+     * package, which says what its work needs with `by` and leaves who does it to whoever uses it; a
+     * role is one of the roles and is bound once; every option is a quoted string.
+     */
+    private bind(role: string, provider: string, list: string | undefined, file: string, line: number): void {
+        if (this.owner !== undefined) {
+            this.fail(`The package "${this.owner}" binds the role "${role}", but a package only says what its work needs with by: the project that uses it binds the roles.`);
+            return;
+        }
+
+        if (!SlytherRole.isRole(role)) {
+            this.fail(`"${role}" is not a role: the roles that write are ${SlytherRole.WRITERS.join(", ")}, and the ones that judge are ${SlytherRole.JUDGES.join(", ")}.`);
+            return;
+        }
+
+        const known = this.roles.get(role);
+
+        if (known) {
+            this.fail(`The role "${role}" is bound twice: at ${known.file || "the script"}:${known.line + 1} and at ${file || "the script"}:${line + 1}.`);
+            return;
+        }
+
+        const options: Record<string, string> = {};
+
+        for (const entry of StringUtils.splitUnquoted(list ?? "", ",").filter((entry) => entry.trim().length > 0)) {
+            const option = SlytherParser.OPTION.exec(entry);
+
+            if (!option) {
+                this.fail(`"${entry.trim()}" is not an option of the role "${role}": write it as name: "value".`);
+                return;
+            }
+
+            if (option[1]! in options) {
+                this.fail(`The role "${role}" is given the option "${option[1]}" twice.`);
+                return;
+            }
+
+            options[option[1]!] = option[2] ?? option[3] ?? "";
+        }
+
+        this.roles.set(role, { provider, options, file, line });
+    }
+
+    private import(resolved: string, target: string, path: string, owner?: string): void {
         if (this.imported.has(resolved)) {
             return;
         }
@@ -810,12 +915,20 @@ export class SlytherParser {
         const source = this.read(resolved);
 
         if (source === undefined) {
-            this.fail(`Cannot import "${target}" from "${path || process.cwd()}".`);
+            this.fail(
+                owner
+                    ? `Cannot import the package "${owner}": nothing is installed at "${resolved}".`
+                    : `Cannot import "${target}" from "${path || process.cwd()}".`,
+            );
 
             return;
         }
 
+        const outer = this.owner;
+
+        this.owner = owner ?? outer;
         this.scan(source, resolved);
+        this.owner = outer;
     }
 
     private checkParents(): void {
@@ -948,10 +1061,35 @@ export class SlytherParser {
 
     /** Looks the name up in the scope, then in each enclosing scope, then globally. */
     private resolve(name: string, scope: string): string | undefined {
+        return SlytherParser.lookup(name, scope, (candidate) => this.declarations.has(candidate));
+    }
+
+    /**
+     * The kind a declaration opens with, looked up as a reference is: in the namespace it is written
+     * in, then in each enclosing one, then globally. A kind a package declares is named inside that
+     * package, so what it declares is reached by opening it with `@use` or by writing it qualified.
+     */
+    private resolveKind(name: string, scope: string): string | undefined {
+        return SlytherParser.lookup(name, scope, (candidate) => this.kinds.has(candidate));
+    }
+
+    /** Why a kind was not found: unknown, or declared somewhere this declaration cannot see it. */
+    private unknownKind(name: string, owner: string): string {
+        const elsewhere = [...this.kinds].filter((candidate) => candidate.endsWith(`::${name}`));
+
+        if (elsewhere.length === 0) {
+            return `Unknown artifact "${name}" of "${owner}".`;
+        }
+
+        return `Unknown artifact "${name}" of "${owner}": ${elsewhere.map((candidate) => `"${candidate}"`).join(" and ")} declare${elsewhere.length > 1 ? "" : "s"} it elsewhere, so write it qualified or open its namespace with @use.`;
+    }
+
+    /** Looks a name up in the scope, then in each enclosing scope, then globally, among whatever the test knows. */
+    private static lookup(name: string, scope: string, has: (candidate: string) => boolean): string | undefined {
         for (let prefix = scope; ; ) {
             const candidate = prefix ? `${prefix}::${name}` : name;
 
-            if (this.declarations.has(candidate)) {
+            if (has(candidate)) {
                 return candidate;
             }
 

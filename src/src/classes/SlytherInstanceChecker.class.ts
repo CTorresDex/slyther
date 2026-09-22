@@ -9,6 +9,7 @@ import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import { SlytherExpansion } from "./SlytherExpansion.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import { SlytherInstanceManifest } from "./SlytherInstanceManifest.class.ts";
+import { SlytherRole } from "./SlytherRole.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
 import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 
@@ -19,6 +20,8 @@ export class SlytherInstanceChecker {
     static readonly DEMANDED = "demanded";
     /** How deep an instance may ask for another that does not exist yet before the chain is given up on. */
     private static readonly ROUNDS = 3;
+    /** How many times a failing instance is updated with its errors, unless the options say otherwise. */
+    private static readonly FIXES = 2;
     /** How long a script of an operation gets to finish before it is killed, with everything it spawned, and counted as a failure. */
     private static readonly TIMEOUT = 60_000;
     /** What an llm step of evaluate must reply. */
@@ -35,10 +38,16 @@ export class SlytherInstanceChecker {
     private static readonly SPEC = "its spec changed";
     /** The reason of an instance whose kind changed its rules, so every instance of it is updated. */
     private static readonly RULES = "the rules of its kind changed";
+    /** The reason of an instance whose evaluate changed, which is evaluated first and only updated when it fails. */
+    private static readonly EVALUATOR = "what evaluates it changed";
     /** The reason of an instance with code that has no record yet, which is evaluated before anything touches it. */
     private static readonly NEW = "never evaluated";
 
     private manifest!: SlytherInstanceManifest;
+    /** Who plays every role the project binds: who writes every instance, and who judges it. */
+    private roles = new Map<string, SlytherRole["binding"]>();
+    /** Who wrote every instance written in this check, keyed by `kind:name`, as its record keeps it. */
+    private written = new Map<string, string>();
     /** Every artifact of the script being checked, expanded, keyed by `kind:name`. */
     private declared = new Map<string, SlytherArtifact>();
     /** What every instance with code looks like now, keyed by `kind:name`. */
@@ -53,8 +62,8 @@ export class SlytherInstanceChecker {
         private readonly path: string,
         private readonly built: SlytherArtifactManifest,
         private readonly generator: SlytherGenerator,
-        /** compile: create and update; max: llm budget; log: prints a finished line; say: names what is being waited on. */
-        private readonly options: { compile?: boolean; max?: number; log?: (line: string) => void; say?: (label: string) => void } = {},
+        /** compile: create and update; max: llm budget; fixes: how often a failing instance is updated; log: prints a finished line; say: names what is being waited on. */
+        private readonly options: { compile?: boolean; max?: number; fixes?: number; log?: (line: string) => void; say?: (label: string) => void } = {},
     ) {}
 
     /**
@@ -65,11 +74,14 @@ export class SlytherInstanceChecker {
      *
      * With compile, it is a compiler: an instance that is missing is created with the create operation
      * of its kind, one whose spec changed is updated with its update operation, and one that fails
-     * evaluation, or failed last time, is updated with the errors and evaluated once more. Without it,
-     * nothing touches the code. Returns what happened to every instance.
+     * evaluation, or failed last time, is updated with the errors and evaluated once more, up to fixes
+     * times, every update resuming the session of the one before it. Without it, nothing touches the
+     * code. Returns what happened to every instance.
      */
     async check(parsed: ParsedSlytherScript, kinds: SlytherArtifactKind[]): Promise<SlytherInstanceChecker["entry"][]> {
         this.manifest = await SlytherInstanceManifest.load(this.path);
+        this.roles = parsed.roles;
+        this.written = new Map();
 
         const { parsed: expanded, expansions } = await this.expand(parsed, kinds);
 
@@ -123,8 +135,15 @@ export class SlytherInstanceChecker {
         await this.warnUndeclared(kinds, instances);
 
         const order = SlytherInstanceChecker.orderOf(coded);
-        /** Every instance put off because what it asks for did not exist yet: how often, and what was done to it before. */
-        const deferred = new Map<string, { rounds: number; done: SlytherInstanceChecker["entry"]["status"]; reason: string }>();
+        /**
+         * The instances put off until what they asked for was brought in line: how many times, what was done
+         * to them, why, when their work started and the session that wrote them. Their operation already ran,
+         * so when they come back they are only asked again what they need and judged, never written again.
+         */
+        const deferred = new Map<
+            string,
+            { rounds: number; done: SlytherInstanceChecker["entry"]["status"]; reason: string; started: number; session: string | undefined }
+        >();
         const pending = order.filter((key) => this.workOf(key, coded.get(key)!, states) !== null);
         const llm = pending.filter((key) => this.needsLlm(coded.get(key)!.kind, this.workOf(key, coded.get(key)!, states)!)).length;
 
@@ -170,24 +189,30 @@ export class SlytherInstanceChecker {
                 continue;
             }
 
-            const started = Date.now();
+            const put = deferred.get(key);
+            const started = put?.started ?? Date.now();
 
             let verdict: { pass: boolean; errors: string[] };
             let status: SlytherInstanceChecker["entry"]["status"];
+            /** The session of the last llm that wrote the instance in this check, for a fix to resume. */
+            let session: string | undefined = put?.session;
 
             if (work.operation) {
-                await this.perform(work.operation, instance, key, [], work.reason);
+                // One put off was already written: running its operation again would only ask for something else.
+                if (!put) {
+                    session = await this.perform(work.operation, instance, key, [], work.reason);
+                }
+
                 state = await this.relocate(key, instance, states);
 
                 // What it turned out to ask for is only known now: whatever is missing is made before it is judged.
                 const asked = await this.demand(coded, states, kinds);
-                const put = deferred.get(key);
                 const rounds = put?.rounds ?? 0;
 
                 if (asked.length > 0 && rounds < SlytherInstanceChecker.ROUNDS) {
-                    deferred.set(key, { rounds: rounds + 1, done: put?.done ?? work.done, reason: put?.reason ?? work.reason });
+                    deferred.set(key, { rounds: rounds + 1, done: put?.done ?? work.done, reason: put?.reason ?? work.reason, started, session });
                     order.push(...asked, key);
-                    this.options.log?.(`${key}: asks for ${asked.join(", ")}, which nothing has made yet`);
+                    this.options.log?.(`${key}: asks for ${asked.join(", ")}, which must be made or brought in line with what it asks first`);
 
                     continue;
                 }
@@ -201,17 +226,36 @@ export class SlytherInstanceChecker {
             }
 
             // An instance put off until what it asked for existed is reported as what was done to it, not as merely evaluated.
-            const put = deferred.get(key);
             const done = put?.done ?? work.done;
             const reason = put?.reason ?? work.reason;
 
             status = verdict.pass ? done : "fail";
 
-            if (!verdict.pass && this.options.compile && state.segments !== undefined && this.has(instance.kind, "update")) {
-                this.options.log?.(`${key}: failed evaluation, updating to fix:\n${verdict.errors.map((error) => `    - ${error}`).join("\n")}`);
-                await this.perform("update", instance, key, verdict.errors, work.reason);
+            const fixes = this.options.fixes ?? SlytherInstanceChecker.FIXES;
+
+            for (let fix = 1; !verdict.pass && fix <= fixes && this.options.compile && state.segments !== undefined && this.has(instance.kind, "update"); fix++) {
+                this.options.log?.(`${key}: failed evaluation, updating to fix (${fix} of ${fixes}):\n${verdict.errors.map((error) => `    - ${error}`).join("\n")}`);
+
+                const before = state.contentHash;
+
+                session = await this.perform("update", instance, key, verdict.errors, work.reason, session);
                 state = await this.relocate(key, instance, states);
-                verdict = state.segments === undefined ? { pass: false, errors: ["the update removed it"] } : await this.evaluate(instance, key, state);
+
+                if (state.segments === undefined) {
+                    verdict = { pass: false, errors: ["the update removed it"] };
+                    status = "fail";
+
+                    break;
+                }
+
+                // The same code against the same rules earns the same verdict, so the one it has stands.
+                if (state.contentHash === before) {
+                    this.options.log?.(`${key}: the update changed nothing, so it is not evaluated again`);
+
+                    break;
+                }
+
+                verdict = await this.evaluate(instance, key, state);
                 status = verdict.pass ? (done === "pass" ? "fixed" : done) : "fail";
             }
 
@@ -235,6 +279,7 @@ export class SlytherInstanceChecker {
                     }),
                 ),
                 evaluatedWith: this.evaluatedWithOf(instance.kind),
+                ...SlytherInstanceChecker.writtenByOf(this.written.get(key) ?? this.manifest.instances[key]?.writtenBy),
                 result: verdict.pass ? "pass" : "fail",
                 errors: verdict.errors,
             };
@@ -326,7 +371,7 @@ export class SlytherInstanceChecker {
             throw new Error(`the expand of ${instance.kind} is not built: run build first.`);
         }
 
-        const args = SlytherInstanceChecker.argsOf(operation, instance, key, []);
+        const args = SlytherArtifactKind.argsOf(operation, instance, key, []);
         let printed = "";
 
         for (const step of operation.steps) {
@@ -346,7 +391,7 @@ export class SlytherInstanceChecker {
 
     /** Where what an instance of a composite kind emitted is written. */
     private expandedPathOf(kind: string, name: string): string {
-        return join(dirname(this.path), SlytherInstanceChecker.EXPANDED, kind, `${name}.sly`);
+        return join(dirname(this.path), SlytherInstanceChecker.EXPANDED, SlytherArtifactKind.folderOf(kind), `${name}.sly`);
     }
 
     /** Removes what was written, under the folder, for instances that are gone, and the folders left empty. */
@@ -541,7 +586,8 @@ export class SlytherInstanceChecker {
         }
 
         const broken = reason.endsWith(SlytherInstanceChecker.GONE);
-        const brings = reason !== SlytherInstanceChecker.NEW && !broken;
+        // What evaluates it changed, not what it must do: the new evaluate decides, and a failure is fixed like any other.
+        const brings = reason !== SlytherInstanceChecker.NEW && reason !== SlytherInstanceChecker.EVALUATOR && !broken;
 
         if (brings && this.options.compile && this.has(instance.kind, "update")) {
             return { reason, operation: "update", done: "updated", broken: false };
@@ -736,7 +782,7 @@ export class SlytherInstanceChecker {
                 continue;
             }
 
-            const path = join(folder, instance.kind, `${instance.name}.sly`);
+            const path = join(folder, SlytherArtifactKind.folderOf(instance.kind), `${instance.name}.sly`);
             const body = instance.demands.split("\n").map((line) => `    ${line}`).join("\n");
 
             await mkdir(dirname(path), { recursive: true });
@@ -839,6 +885,13 @@ export class SlytherInstanceChecker {
         const signature = await this.runOperation(instance.kind, "signature", this.argsFor(instance.kind, "signature", instance, key));
         const uses = await this.runOperation(instance.kind, "uses", this.argsFor(instance.kind, "uses", instance, key));
 
+        // Without a signature what depends on it is compared by hash, so any edit of it updates them all: that is said, never silent.
+        for (const [operation, result] of [["signature", signature], ["uses", uses]] as const) {
+            if (result && result.code !== 0) {
+                this.options.log?.(`${key}: its ${operation} exited ${result.code} though it was located, so what depends on it is compared by its whole code`);
+            }
+        }
+
         return {
             ...locatedWith,
             segments,
@@ -926,7 +979,7 @@ export class SlytherInstanceChecker {
         }
 
         if (record.evaluatedWith !== this.evaluatedWithOf(kind)) {
-            return "what evaluates it changed";
+            return SlytherInstanceChecker.EVALUATOR;
         }
 
         for (const [reference, seen] of Object.entries(record.dependencies)) {
@@ -974,6 +1027,8 @@ export class SlytherInstanceChecker {
     /**
      * Runs the evaluate operation of the kind on the instance: its scripts with the id, then its prompts
      * through the generator, each followed by what the instance must do, as declared, and its code.
+     * Every step runs even after one fails, and their errors are joined, so a fix sees every discrepancy
+     * at once rather than one step per round, which would let it satisfy one step by breaking the next.
      */
     private async evaluate(
         instance: { kind: string; name: string; artifact: SlytherArtifact; demands?: string },
@@ -986,14 +1041,16 @@ export class SlytherInstanceChecker {
             return { pass: true, errors: [] };
         }
 
+        const errors: string[] = [];
+
         for (const step of operation.steps) {
             if (step.run) {
                 this.options.say?.(`${key}: evaluating with ${step.run.join(" ")}`);
 
-                const result = await ProcessUtils.run([...step.run, ...SlytherInstanceChecker.argsOf(operation, instance, key, [])], { cwd: this.cwd, timeout: SlytherInstanceChecker.TIMEOUT });
+                const result = await ProcessUtils.run([...step.run, ...SlytherArtifactKind.argsOf(operation, instance, key, [])], { cwd: this.cwd, timeout: SlytherInstanceChecker.TIMEOUT });
 
                 if (result.code !== 0) {
-                    return { pass: false, errors: SlytherInstanceChecker.linesOf(`${result.stdout}\n${result.stderr}`) };
+                    errors.push(...SlytherInstanceChecker.linesOf(`${result.stdout}\n${result.stderr}`));
                 }
 
                 continue;
@@ -1014,16 +1071,18 @@ export class SlytherInstanceChecker {
                 ...SlytherInstanceChecker.section("### What it references", this.contextOf(instance, "####")),
                 "Reply with `pass` true when it complies with everything above, else false with one entry in `errors` per discrepancy.",
             ].join("\n");
-            this.options.say?.(`${key}: evaluating with the llm (${step.path})`);
+            const cast = SlytherRole.cast(step.role ?? SlytherRole.standardOf("judge"), this.roles);
 
-            const verdict = await this.generator.ask<{ pass: boolean; errors: string[] }>(prompt, SlytherInstanceChecker.VERDICT);
+            this.options.say?.(`${key}: evaluating with the ${SlytherRole.labelOf(cast)} (${step.path})`);
+
+            const verdict = await this.generator.ask<{ pass: boolean; errors: string[] }>(prompt, SlytherInstanceChecker.VERDICT, undefined, cast);
 
             if (!verdict.result.pass) {
-                return { pass: false, errors: verdict.result.errors };
+                errors.push(...verdict.result.errors);
             }
         }
 
-        return { pass: true, errors: [] };
+        return { pass: errors.length === 0, errors };
     }
 
     /**
@@ -1039,6 +1098,13 @@ export class SlytherInstanceChecker {
      *
      * An update is told what changed as well, so it is not left to find it by reading code that was
      * written against the declaration as it was before.
+     *
+     * A markdown resumes the session when given one, so a fix continues the conversation that wrote
+     * the code, and returns the session of its reply; a script has none.
+     *
+     * The operation brings the instance in line with what evaluates it, never the other way around: a
+     * markdown is told to leave the artifacts alone, and whatever the operation changed of the files
+     * the build wrote there is put back and said, so no instance ever passes by rewriting its judge.
      */
     private async perform(
         name: "create" | "update",
@@ -1046,9 +1112,40 @@ export class SlytherInstanceChecker {
         key: string,
         errors: string[],
         reason?: string,
-    ): Promise<void> {
+        session?: string,
+    ): Promise<string | undefined> {
+        const paths = Object.keys(this.built.files);
+        const read = (path: string) => readFile(join(this.cwd, this.artifacts, path), "utf-8").catch(() => undefined);
+        const before = await Promise.all(paths.map(read));
+
+        try {
+            return await this.operate(name, instance, key, errors, reason, session);
+        } finally {
+            for (const [index, path] of paths.entries()) {
+                const content = before[index];
+
+                if (content !== undefined && (await read(path)) !== content) {
+                    const target = join(this.cwd, this.artifacts, path);
+
+                    await mkdir(dirname(target), { recursive: true });
+                    await writeFile(target, content);
+                    this.options.log?.(`${key}: its ${name} changed ${join(this.artifacts, path)}, which the build wrote, so it was put back`);
+                }
+            }
+        }
+    }
+
+    /** Runs the create or update operation of the kind on the instance, as #{perform} describes. */
+    private async operate(
+        name: "create" | "update",
+        instance: SlytherInstanceChecker["instance"],
+        key: string,
+        errors: string[],
+        reason?: string,
+        session?: string,
+    ): Promise<string | undefined> {
         const operation = this.built.operations[`${instance.kind}::${name}`]!;
-        const args = SlytherInstanceChecker.argsOf(operation, instance, key, errors);
+        const args = SlytherArtifactKind.argsOf(operation, instance, key, errors);
 
         const verb = name === "create" ? "creating" : "updating";
 
@@ -1063,7 +1160,7 @@ export class SlytherInstanceChecker {
                 }
             }
 
-            return;
+            return undefined;
         }
 
         let markdown = await readFile(join(this.cwd, this.artifacts, operation.entry!), "utf-8");
@@ -1085,6 +1182,8 @@ export class SlytherInstanceChecker {
             "",
             SlytherInstanceChecker.mustOf(instance),
             "",
+            `Never change anything under \`${this.artifacts}\`: those files are what evaluates the ${instance.kind}, and whatever changes there is put back.`,
+            "",
         ].join("\n");
 
         const changed = name === "update" ? this.changedOf(key, instance, reason) : [];
@@ -1103,8 +1202,12 @@ export class SlytherInstanceChecker {
             markdown = `${markdown}\n## Why it failed evaluation\n\n${errors.map((error) => `- ${error}`).join("\n")}\n`;
         }
 
-        this.options.say?.(`${key}: ${verb} with the llm (${operation.entry})`);
-        await this.generator.execute(markdown, this.cwd);
+        const cast = SlytherRole.cast(operation.role ?? SlytherRole.standardOf("write"), this.roles);
+
+        this.options.say?.(`${key}: ${verb} with the ${SlytherRole.labelOf(cast)} (${operation.entry})`);
+        this.written.set(key, SlytherRole.fingerprintOf(cast));
+
+        return (await this.generator.execute(markdown, this.cwd, session, cast)).session;
     }
 
     /**
@@ -1146,49 +1249,13 @@ export class SlytherInstanceChecker {
     }
 
     /**
-     * The args an operation is run with for an instance, one per param, by the name of the param: id is
-     * the name of the instance, errors is the errors it is run to fix, a param named as an arg of the
-     * instance is the value of that arg, and any other is the prose of the instance, unless it is
-     * optional, which the instance simply did not give. Throws when a param that is not optional gets
-     * nothing.
-     */
-    private static argsOf(
-        operation: SlytherArtifactManifest["operations"][string],
-        instance: { name: string; artifact: SlytherArtifact; demands?: string },
-        key: string,
-        errors: string[],
-    ): string[] {
-        return operation.params.map((param) => {
-            const arg = instance.artifact.args.find((candidate) => candidate.name === param.name);
-            const value =
-                param.name === "id"
-                    ? instance.name
-                    : param.name === "errors"
-                      ? errors.join("\n")
-                      : param.name === "demands" && instance.demands !== undefined
-                        ? instance.demands
-                        : arg !== undefined
-                          ? String(arg.value)
-                          : param.optional
-                            ? ""
-                            : instance.artifact.prose;
-
-            if (value === "" && !param.optional && param.name !== "errors") {
-                throw new Error(`${key} gives nothing for the param "${param.name}" of ${operation.kind}::${operation.name}: declare it as an arg, or write it as the prose of the instance.`);
-            }
-
-            return value;
-        });
-    }
-
-    /**
      * The args the read-only operation of the kind runs with for the instance, filled as create fills
      * them, so a kind whose locate needs more than the id gets it from the args of the instance.
      */
     private argsFor(kind: string, operation: string, instance: { name: string; artifact: SlytherArtifact; demands?: string }, key: string): string[] {
         const record = this.built.operations[`${kind}::${operation}`];
 
-        return record ? SlytherInstanceChecker.argsOf(record, instance, key, []) : [instance.name];
+        return record ? SlytherArtifactKind.argsOf(record, instance, key, []) : [instance.name];
     }
 
     /**
@@ -1223,8 +1290,17 @@ export class SlytherInstanceChecker {
         const paths = ["locate", "signature", "uses", "evaluate", SlytherArtifactKind.EXPAND].flatMap(
             (operation) => this.built.operations[`${kind}::${operation}`]?.steps.map((step) => step.path) ?? [],
         );
+        // A verdict is only as good as whoever gave it: who plays the judge of every llm step is part of what evaluates.
+        const judges = (this.built.operations[`${kind}::evaluate`]?.steps ?? [])
+            .filter((step) => step.kind === "llm")
+            .map((step) => `${step.path} judged by ${SlytherRole.fingerprintOf(SlytherRole.cast(step.role ?? SlytherRole.standardOf("judge"), this.roles))}`);
 
-        return SlytherInstanceChecker.hash(...paths.map((path) => `${path}@${this.built.files[path]?.outputHash ?? ""}`));
+        return SlytherInstanceChecker.hash(...paths.map((path) => `${path}@${this.built.files[path]?.outputHash ?? ""}`), ...judges);
+    }
+
+    /** Who wrote the instance, as its record keeps it: where its code came from, which never makes it be written again. */
+    private static writtenByOf(writtenBy: string | undefined): { writtenBy?: string } {
+        return writtenBy ? { writtenBy } : {};
     }
 
     /**

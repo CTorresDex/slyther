@@ -31,8 +31,8 @@ class FakeGenerator extends SlytherGenerator {
         return { result: { files: [{ path, content: `${this.scripts[path]}\n` }], dependencies: {} } as T, session: "s" };
     }
 
-    override async execute(): Promise<string> {
-        return "";
+    override async execute(): Promise<{ text: string; session: string }> {
+        return { text: "", session: "e" };
     }
 }
 
@@ -114,6 +114,20 @@ describe("a demanded kind", () => {
 
         expect(statuses(report)).toEqual(["util:StringUtils created", "svc:A created"]);
         expect(await read("util-StringUtils.txt")).toBe("capitalize (svc:A)\n");
+    });
+
+    test("an update put off until what it asks for is made is not run again when it comes back", async () => {
+        const counting = { ...SCRIPTS, "svc/update/fix.sh": 'echo x >> "src/$1.updates"; [ -f "src/$1.wants" ] && cp "src/$1.wants" "src/$1.uses"; exit 0' };
+
+        await compile(new FakeGenerator(counting));
+        await spec("svc A { the a, now with arrays }");
+        await write("A.wants", "util:StringUtils capitalize\nutil:ArrayUtils chunk\n");
+
+        const report = await compile(new FakeGenerator(counting));
+
+        expect(statuses(report)).toContain("util:ArrayUtils created");
+        expect(statuses(report)).toContain("svc:A updated");
+        expect(await read("A.updates")).toBe("x\n");
     });
 
     test("records what asks for it, and what it is asked", async () => {

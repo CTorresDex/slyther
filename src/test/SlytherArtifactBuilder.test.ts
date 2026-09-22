@@ -31,8 +31,8 @@ class FakeGenerator extends SlytherGenerator {
         return { result: { files: [{ path, content: `${content}\n` }], dependencies: {} } as T, session: "s" };
     }
 
-    override async execute(prompt: string): Promise<string> {
-        return `executed:${prompt}`;
+    override async execute(prompt: string): Promise<{ text: string; session: string }> {
+        return { text: `executed:${prompt}`, session: "e" };
     }
 }
 
@@ -41,7 +41,7 @@ const SCRIPTS = {
     "k/locate/locate.sh": '[ "$1" = "a" ] && echo src/a.txt && exit 0; exit 1',
     "k/list/list.sh": "echo a",
     "k/signature/signature.sh": "echo 'name string'",
-    "k/uses/uses.sh": "exit 1",
+    "k/uses/uses.sh": "exit 0",
     "k/create/scaffold.sh": 'echo "scaffold $1 $2"',
 };
 const SPEC = (step = "makes the file") => `@lang "sh"
@@ -111,9 +111,10 @@ describe("SlytherArtifactBuilder", () => {
                 { name: "content", type: "string", optional: false },
             ],
             entry: "k/create/operation.md",
+            role: "engineer",
             steps: [
-                { name: "scaffold", kind: "deterministic", path: "k/create/scaffold.sh", lang: "sh", run: ["sh", ".slyther/artifacts/k/create/scaffold.sh"] },
-                { name: "fill", kind: "llm", path: "k/create/fill.md" },
+                { name: "scaffold", kind: "deterministic", path: "k/create/scaffold.sh", lang: "sh", run: ["sh", ".slyther/artifacts/k/create/scaffold.sh"], role: "scribe" },
+                { name: "fill", kind: "llm", path: "k/create/fill.md", role: "engineer" },
             ],
         });
         expect(recorded.operations["k::locate"].entry).toBeUndefined();
@@ -307,6 +308,8 @@ describe("SlytherArtifactBuilder expand", () => {
         expect(offered("k/locate/locate.sh")).toEqual([]);
         expect(offered("k/list/list.sh")).toEqual(["locate"]);
         expect(offered("k/signature/signature.sh")).toEqual(["locate", "list"]);
+        // signature and uses are written side by side, so neither is offered the other.
+        expect(offered("k/uses/uses.sh")).toEqual(["locate", "list"]);
         expect(offered("k/create/scaffold.sh").sort()).toEqual(["list", "locate", "signature", "uses"]);
     });
 
@@ -323,6 +326,85 @@ describe("SlytherArtifactBuilder expand", () => {
 
         expect(rebuilt.asked).toEqual(["k/locate/locate.sh"]);
         expect(rebuilt.prompts["k/locate/locate.sh"]).not.toContain("- The operations of the kind built before this one");
+    });
+});
+
+/** Takes a while to write every script, and records when each started and finished, and how many were written at once. */
+class SlowGenerator extends FakeGenerator {
+    readonly events: string[] = [];
+    most = 0;
+    private writing = 0;
+
+    override async ask<T>(prompt: string, schema: object, session?: string): Promise<{ result: T; session: string }> {
+        const path = /`([^`]+)`\.$/m.exec(prompt)![1]!;
+
+        this.events.push(`start ${path}`);
+        this.most = Math.max(this.most, ++this.writing);
+        await Bun.sleep(40);
+        this.writing--;
+        this.events.push(`end ${path}`);
+
+        return super.ask<T>(prompt, schema, session);
+    }
+
+    /** Whether the first event happened before the second. */
+    before(first: string, second: string): boolean {
+        return this.events.indexOf(first) < this.events.indexOf(second);
+    }
+}
+
+describe("SlytherArtifactBuilder side by side", () => {
+    test("a script waits for what it is offered, and signature and uses are written at once", async () => {
+        const generator = new SlowGenerator(SCRIPTS);
+
+        await build(generator);
+
+        expect(generator.before("end k/locate/locate.sh", "start k/list/list.sh")).toBe(true);
+        expect(generator.before("end k/list/list.sh", "start k/signature/signature.sh")).toBe(true);
+        expect(generator.before("start k/uses/uses.sh", "end k/signature/signature.sh")).toBe(true);
+        expect(generator.before("end k/signature/signature.sh", "start k/create/scaffold.sh")).toBe(true);
+        expect(generator.before("end k/uses/uses.sh", "start k/create/scaffold.sh")).toBe(true);
+        expect(generator.most).toBe(2);
+    });
+
+    const KINDS = `@lang "sh"
+@artifact k {
+    rules of k
+    operation locate: deterministic { prints src/{id}.txt }
+}
+@artifact j {
+    rules of j
+    operation locate: deterministic { prints src/{id}.md }
+}
+@artifact h {
+    rules of h
+    operation locate: deterministic { prints src/{id}.h }
+}`;
+    const LOCATES = Object.fromEntries(["k", "j", "h"].flatMap((kind) => [[`${kind}/locate/locate.sh`, "exit 1"], [`${kind}/list/list.sh`, "true"]]));
+
+    test("the scripts of different kinds are written side by side, up to the concurrency", async () => {
+        const wide = new SlowGenerator(LOCATES);
+        const narrow = new SlowGenerator(LOCATES);
+
+        await new SlytherArtifactBuilder(root, ARTIFACTS, wide).build(kindsOf(KINDS));
+        expect(wide.most).toBe(3);
+
+        await rm(join(root, ARTIFACTS), { recursive: true, force: true });
+        await new SlytherArtifactBuilder(root, ARTIFACTS, narrow, { concurrency: 2 }).build(kindsOf(KINDS));
+        expect(narrow.most).toBe(2);
+        expect(narrow.asked.sort()).toEqual(Object.keys(LOCATES).sort());
+    });
+
+    test("once a script fails, what waits for it is never written, and what was under way is kept", async () => {
+        const generator = new SlowGenerator({ ...SCRIPTS, "k/signature/signature.sh": "echo broken" });
+
+        expect(build(generator, SPEC(), 1)).rejects.toThrow("k/signature/signature.sh failed verification 1 times:");
+        await Bun.sleep(400);
+
+        expect(generator.asked).not.toContain("k/create/scaffold.sh");
+        expect(generator.asked).toContain("k/uses/uses.sh");
+        expect((await manifest()).files["k/uses/uses.sh"]).toBeDefined();
+        expect((await manifest()).files["k/signature/signature.sh"]).toBeUndefined();
     });
 });
 

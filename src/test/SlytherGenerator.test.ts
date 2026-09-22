@@ -16,8 +16,8 @@ class FakeGenerator extends SlytherGenerator {
         return { result: this.replies.shift() as T, session: `s${this.prompts.length}` };
     }
 
-    override async execute(): Promise<string> {
-        return "";
+    override async execute(): Promise<{ text: string; session: string }> {
+        return { text: "", session: "e" };
     }
 }
 
@@ -75,11 +75,16 @@ describe("ClaudeCLIGenerator", () => {
         expect(ClaudeCLIGenerator.askCommand({}, undefined, "", "low").slice(-2)).toEqual(["--effort", "low"]);
     });
 
-    test("execute allows the editing tools", () => {
-        const command = ClaudeCLIGenerator.executeCommand("");
+    test("execute allows the editing tools, and resumes the session it is given", () => {
+        const command = ClaudeCLIGenerator.executeCommand(undefined, "");
 
         expect(command).toContain("--allowedTools");
         expect(command[command.indexOf("--allowedTools") + 1]).toBe("Read,Glob,Grep,Edit,Write,Bash");
         expect(command).toContain("acceptEdits");
+        expect(command).not.toContain("--resume");
+
+        const resumed = ClaudeCLIGenerator.executeCommand("s1", "");
+
+        expect(resumed.slice(resumed.indexOf("--resume"), resumed.indexOf("--resume") + 2)).toEqual(["--resume", "s1"]);
     });
 });

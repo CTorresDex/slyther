@@ -20,7 +20,10 @@ export class SlytherArtifactManifest {
                 params: { name: string; type: string; optional: boolean }[];
                 /** The markdown that orchestrates the steps, for an operation that is not deterministic. */
                 entry?: string;
-                steps: { name: string; kind: "llm" | "deterministic"; path: string; lang?: string; run?: string[] }[];
+                /** The role that runs that markdown. */
+                role?: string;
+                /** Every step, with the role its work is done by: who wrote its script, or who does what its llm step says. */
+                steps: { name: string; kind: "llm" | "deterministic"; path: string; lang?: string; run?: string[]; role?: string }[];
             }
         >,
         /** Every script that runs the project, keyed by its name: what running it needs to know. */
@@ -33,7 +36,7 @@ export class SlytherArtifactManifest {
             }
         >,
         /** Every file built, keyed by its path relative to the artifacts folder: what deciding to rebuild it needs. */
-        readonly files: Record<string, { inputHash: string; outputHash: string; dependencies?: Record<string, string> }>,
+        readonly files: Record<string, { inputHash: string; outputHash: string; dependencies?: Record<string, string>; writtenBy?: string }>,
     ) {}
 
     /** The manifest at the path, or an empty one when there is none yet. */

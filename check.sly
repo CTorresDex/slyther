@@ -31,7 +31,10 @@ class SlytherInstanceManifest {
     - dependencies: For every instance it references, the content hash and the signature it had when
       this one was evaluated
     - evaluatedWith: The hash of every script and prompt that takes part in evaluating an instance of the
-      kind, as built: locate, signature, uses and evaluate
+      kind, as built: locate, signature, uses and evaluate, and of who plays the judge of every llm step
+      of evaluate, since a verdict is only as good as whoever gave it
+    - writtenBy: Who last wrote it, as a cast of #{Compiler::SlytherRole} is recorded: where its code came
+      from, never a reason to write it again
     - result: pass, fail, missing or orphan, and errors: what evaluate reported
 
     It records the version it was written with, 3, so one written before is brought forward: every
@@ -45,7 +48,9 @@ class SlytherInstanceManifest {
 class SlytherInstanceChecker {
     Checks every instance a #{Compiler::ParsedSlytherScript} declares against the rules of its kind, given
     the root of the project, the folder the operations are built into, the path of the
-    #{SlytherInstanceManifest}, the #{Build::SlytherArtifactManifest} and a #{Build::SlytherGenerator}.
+    #{SlytherInstanceManifest}, the #{Build::SlytherArtifactManifest}, a #{Build::SlytherGenerator} and
+    its options: compile, max, and fixes, how many times a failing instance may be updated with its
+    errors, 2 unless given.
 
     An instance is every artifact whose kind has operations, identified by its name, and the instances it
     references with \#{} are its dependencies. Instances are checked in an order where every one comes
@@ -74,7 +79,9 @@ class SlytherInstanceChecker {
     first and the instance is put off until it does, rather than failing for a reference nothing has
     made yet. An instance created that way may ask for another in turn, which is satisfied the same way,
     up to three rounds deep, after which the instance is judged as it stands rather than the chain
-    growing without end.
+    growing without end. When an instance put off comes back it is only asked again and judged: its
+    create or update already ran and never runs again, since writing it again would only ask for
+    something else, and its time is counted from when its work first started.
 
     An instance of a demanded kind that nothing asks for any more is an orphan, which is only certain
     once every instance has been brought in line, since an instance that stopped asking only says so
@@ -114,9 +121,14 @@ class SlytherInstanceChecker {
     Whatever changed is brought in line with the update operation of its kind before it is evaluated,
     when compile is on and its kind has one, since the prose rules over the code and the evaluate of a
     kind only ever covers part of what the prose says: an evaluate that passes says the code met what
-    that evaluate checks, never that it still says what the prose says. Two are not brought in line: an
-    instance with no record yet, which has changed from nothing and is evaluated as it stands, and one
-    that uses a key that is gone, which no update can fix. Without compile, a spec hash or a rules hash
+    that evaluate checks, never that it still says what the prose says. Three are not brought in line: an
+    instance with no record yet, which has changed from nothing and is evaluated as it stands, one whose
+    only change is what evaluates it, since what it must do is the same and the new evaluate decides
+    whether it still complies, updating it only when it fails, and one that uses a key that is gone,
+    which no update can fix.
+
+    When the signature or uses of a kind exits with a code other than 0 for an instance that was
+    located, a warning says so, since what depends on it is then compared by its whole code. Without compile, a spec hash or a rules hash
     that changed is not recorded as seen, so a later build still updates the instance, and neither is
     the text behind either, so the diff a later build shows is still the whole of what changed.
 
@@ -137,8 +149,24 @@ class SlytherInstanceChecker {
     Evaluating runs the evaluate operation of the kind: every deterministic step as its script with the
     id, failing with what it prints when it exits with a code other than 0, then every llm step as its
     markdown followed by what the instance must do, its args and its prose as declared, and the segments
-    of its code, asked from the generator for a verdict of pass and errors. With compile, an instance
-    that fails is updated with the update operation of its kind and evaluated once more.
+    of its code, asked from the generator for a verdict of pass and errors, each in a session of its own,
+    so the verdict never leans on an earlier one. Every step runs even after one fails, and the instance
+    fails with the errors of all of them, so a fix sees every discrepancy at once and never satisfies
+    one step by breaking the next.
+
+    A create or an update brings the instance in line with what evaluates it, never the other way
+    around: its markdown is told to leave the artifacts folder alone, and whatever it changed of the
+    files the build wrote there is put back afterwards and reported, so no instance passes by rewriting
+    its judge.
+
+    With compile, an instance that fails is updated with the update operation of its kind, with the
+    errors, and evaluated once more, up to fixes times. Every update of the same instance in the same
+    check resumes the session of the create or update before it, so the fix continues the conversation
+    that wrote the code rather than reading it again cold, as the fix of a script does in
+    #{Build::SlytherArtifactBuilder}. A round whose update left the content hash as it was is the last:
+    the code is not evaluated again, since the same code against the same rules earns the same verdict,
+    and the verdict it already has stands. With fixes 0 a failing instance is never updated. An instance
+    put off until what it asks for exists keeps the session that wrote it, so its fix resumes it as well.
 
     Create and update run with their params filled from the instance, by the name of each param: id is
     the name of the instance, errors is the errors it is run to fix, a param named as an arg of the

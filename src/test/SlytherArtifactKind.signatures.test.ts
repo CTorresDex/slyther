@@ -133,9 +133,9 @@ describe("SlytherArtifactKind lang", () => {
         ).toThrow('Step "k::evaluate::check" is an llm step and cannot declare a lang.');
     });
 
-    test("throws on a configuration other than lang", () => {
+    test("throws on a configuration other than lang and by", () => {
         expect(() => kinds(`@lang "ts"\n@artifact k (model: "x") {\n ${LOCATE}\n}`)).toThrow(
-            'Unknown configuration "model" of "k": the only configuration is lang.',
+            'Unknown configuration "model" of "k": the configuration is lang and by.',
         );
     });
 

@@ -1,4 +1,4 @@
-import { ClaudeCLIGenerator } from '../classes/ClaudeCLIGenerator.class.ts'
+import { SlytherProviders } from '../classes/SlytherProviders.class.ts'
 import { SlytherProject } from '../classes/SlytherProject.class.ts'
 
 export const help = {
@@ -27,7 +27,7 @@ export default async function (args: string[], context: { flags: Record<string, 
 
     const project = new SlytherProject(process.cwd())
     const result = await project.runOperation(kind, operation, params, {
-        execute: context.flags.execute === true ? new ClaudeCLIGenerator() : undefined,
+        execute: context.flags.execute === true ? new SlytherProviders() : undefined,
     })
 
     if (result.output) process.stdout.write(result.output)

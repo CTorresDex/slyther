@@ -1,5 +1,6 @@
 // Imports
 import { SlytherGenerator } from "./SlytherGenerator.class.ts";
+import { SlytherRole } from "./SlytherRole.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
 
 export class SlytherTracedGenerator extends SlytherGenerator {
@@ -15,26 +16,47 @@ export class SlytherTracedGenerator extends SlytherGenerator {
         super();
     }
 
-    override async ask<T>(prompt: string, schema: object, session?: string): Promise<{ result: T; session: string }> {
-        this.log(SlytherTracedGenerator.block(session ? `asking the llm, resuming session ${session}` : "asking the llm", prompt));
+    override async ask<T>(prompt: string, schema: object, session?: string, cast?: SlytherRole["cast"]): Promise<{ result: T; session: string }> {
+        const asking = `asking the llm${SlytherTracedGenerator.as(cast)}`;
+
+        this.log(SlytherTracedGenerator.block(session ? `${asking}, resuming session ${session}` : asking, prompt));
 
         const started = Date.now();
-        const reply = await this.inner.ask<T>(prompt, schema, session);
+        const reply = await this.inner.ask<T>(prompt, schema, session, cast);
 
         this.log(SlytherTracedGenerator.block(`llm reply (${StringUtils.duration(Date.now() - started)}, session ${reply.session})`, JSON.stringify(reply.result, null, 4)));
 
         return reply;
     }
 
-    override async execute(prompt: string, cwd: string): Promise<string> {
-        this.log(SlytherTracedGenerator.block(`executing with the llm in ${cwd}`, prompt));
+    override async execute(prompt: string, cwd: string, session?: string, cast?: SlytherRole["cast"]): Promise<{ text: string; session: string }> {
+        const executing = `executing with the llm${SlytherTracedGenerator.as(cast)} in ${cwd}`;
+
+        this.log(SlytherTracedGenerator.block(session ? `${executing}, resuming session ${session}` : executing, prompt));
 
         const started = Date.now();
-        const reply = await this.inner.execute(prompt, cwd);
+        const reply = await this.inner.execute(prompt, cwd, session, cast);
 
-        this.log(SlytherTracedGenerator.block(`llm reply (${StringUtils.duration(Date.now() - started)})`, reply || "(nothing)"));
+        this.log(SlytherTracedGenerator.block(`llm reply (${StringUtils.duration(Date.now() - started)}, session ${reply.session})`, reply.text || "(nothing)"));
 
         return reply;
+    }
+
+    override problemsWith(casts: SlytherRole["cast"][]): string[] {
+        return this.inner.problemsWith(casts);
+    }
+
+    override pin(options: Record<string, string>): Promise<Record<string, string>> {
+        return this.inner.pin(options);
+    }
+
+    override pinRoles(roles: Map<string, SlytherRole["binding"]>, named: string[]): Promise<Map<string, SlytherRole["binding"]>> {
+        return this.inner.pinRoles(roles, named);
+    }
+
+    /** Who is asked, as the heading of a block says it. */
+    private static as(cast: SlytherRole["cast"] | undefined): string {
+        return cast ? ` as ${SlytherRole.labelOf(cast)}` : "";
     }
 
     private static block(heading: string, body: string): string {

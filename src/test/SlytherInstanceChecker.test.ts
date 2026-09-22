@@ -4,16 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlytherGenerator } from "../src/classes/SlytherGenerator.class.ts";
 import { SlytherProject } from "../src/classes/SlytherProject.class.ts";
+import { SlytherProviders } from "../src/classes/SlytherProviders.class.ts";
+import { SlytherRole } from "../src/classes/SlytherRole.class.ts";
 
-/** Builds the sh scripts registered for every path, and answers every llm evaluation as told. */
+/**
+ * Builds the sh scripts registered for every path, answers every llm evaluation as told, and, when
+ * asked to execute, runs `mend` with how many times it was asked so a test can stand in for what the
+ * llm writes. Every execute opens session `e<n>`, and records the session it was told to resume.
+ */
 class FakeGenerator extends SlytherGenerator {
     readonly evaluated: string[] = [];
     readonly prompts: string[] = [];
     readonly executed: string[] = [];
+    readonly resumed: (string | undefined)[] = [];
 
     constructor(
         readonly scripts: Record<string, string>,
         readonly verdict: { pass: boolean; errors: string[] } = { pass: true, errors: [] },
+        readonly mend: (round: number) => Promise<void> = async () => {},
     ) {
         super();
     }
@@ -31,10 +39,12 @@ class FakeGenerator extends SlytherGenerator {
         return { result: { files: [{ path, content: `${this.scripts[path]}\n` }], dependencies: {} } as T, session: "s" };
     }
 
-    override async execute(prompt: string): Promise<string> {
+    override async execute(prompt: string, _cwd: string, session?: string): Promise<{ text: string; session: string }> {
         this.executed.push(prompt);
+        this.resumed.push(session);
+        await this.mend(this.executed.length);
 
-        return "";
+        return { text: "", session: `e${this.executed.length}` };
     }
 }
 
@@ -326,6 +336,50 @@ describe("SlytherInstanceChecker brings what changed in line", () => {
             "k:A updated (the rules of its kind changed)",
             "k:B updated (the rules of its kind changed)",
         ]);
+    });
+
+    test("what evaluates it that changes evaluates every instance first, and updates only the ones that fail", async () => {
+        const strict = { ...MARKING, "k/evaluate/strict.sh": 'grep -qx b "src/$1.txt" && ! grep -q updated "src/$1.txt" && echo "plain b" && exit 1; exit 0' };
+
+        await compile(new FakeGenerator(strict));
+        await writeFile(join(root, "main.sly"), SPEC("operation evaluate (id): deterministic {\n deterministic check { fails on BAD }\n deterministic strict { fails on a plain b }\n }"));
+
+        expect(statuses(await compile(new FakeGenerator(strict)))).toEqual([
+            "k:A pass (what evaluates it changed)",
+            "k:B fixed (what evaluates it changed)",
+        ]);
+        expect(await read("A.txt")).toBe("a\n");
+        expect(await read("B.txt")).toBe("b\nupdated\n");
+        expect(statuses(await compile(new FakeGenerator(strict)))).toEqual(["k:A kept", "k:B kept"]);
+    });
+
+    test("every step of evaluate runs, so a failure reports the errors of all of them", async () => {
+        const loud = { ...SCRIPTS, "k/evaluate/loud.sh": 'grep -q BAD "src/$1.txt" && echo "too loud" && exit 1; exit 0' };
+
+        await writeFile(join(root, "main.sly"), SPEC("operation evaluate (id): deterministic {\n deterministic check { fails on BAD }\n deterministic loud { fails on BAD too }\n }"));
+        await write("B.txt", "BAD\n");
+
+        const report = await project(new FakeGenerator(loud)).check();
+
+        expect(statuses(report)).toEqual(["k:A pass (never evaluated)", "k:B fail (never evaluated)"]);
+        expect(report[1]!.errors).toEqual(["has BAD", "too loud"]);
+    });
+
+    test("an update that rewrites what evaluates it has it put back, and fails", async () => {
+        const cheat = { ...SCRIPTS, "k/update/fix.sh": 'echo "exit 0" > ../artifacts/k/evaluate/check.sh' };
+        const judge = () => readFile(join(root, ".slyther/artifacts/k/evaluate/check.sh"), "utf-8");
+
+        await compile(new FakeGenerator(cheat));
+
+        const original = await judge();
+
+        await write("B.txt", "BAD\n");
+
+        const report = await compile(new FakeGenerator(cheat));
+
+        expect(statuses(report)).toEqual(["k:A kept", "k:B fail (its code changed)"]);
+        expect(report[1]!.errors).toEqual(["has BAD"]);
+        expect(await judge()).toBe(original);
     });
 
     test("code edited by hand is brought back in line with the prose, not merely evaluated", async () => {
@@ -683,5 +737,190 @@ p Doc (path: "${path}") { a doc }`;
 
         expect(statuses(again)).toContain("p:Doc kept");
         expect(statuses(again).some((status) => status.includes("orphan"))).toBe(false);
+    });
+});
+
+describe("SlytherInstanceChecker fixes", () => {
+    const MENDING = "    operation update (id, errors) {\n        llm mend { mends it }\n    }\n";
+    const mending = (spec: string) =>
+        spec.replace("    operation update (id, errors): deterministic {\n        deterministic fix { replaces BAD }\n    }\n", MENDING);
+    const CREATING = "    operation create (id, requirements) {\n        llm write { writes it }\n    }\n";
+    const creating = (spec: string) =>
+        spec.replace("    operation create (id, requirements): deterministic {\n        deterministic make { writes the requirements }\n    }\n", CREATING);
+    const build = (generator: FakeGenerator, options: { fixes?: number } = {}, lines: string[] = []) =>
+        new SlytherProject(root, generator, { log: (line) => lines.push(line), say: () => {} }).build(options);
+
+    test("fixes a failing instance on the second round, resuming the session of the round before", async () => {
+        await writeFile(join(root, "main.sly"), mending(SPEC()));
+        await write("B.txt", "BAD\n");
+
+        const generator = new FakeGenerator(SCRIPTS, { pass: true, errors: [] }, async (round) => write("B.txt", round === 1 ? "STILL BAD\n" : "GOOD\n"));
+        const { instances } = await build(generator);
+
+        expect(statuses(instances)).toEqual(["k:A pass (never evaluated)", "k:B fixed (never evaluated)"]);
+        expect(generator.executed).toHaveLength(2);
+        expect(generator.resumed).toEqual([undefined, "e1"]);
+        expect(generator.executed[1]).toContain("## Why it failed evaluation\n\n- has BAD\n");
+        expect(await read("B.txt")).toBe("GOOD\n");
+        expect((await manifest())["k:B"].result).toBe("pass");
+    });
+
+    test("stops without evaluating again when the update changed nothing", async () => {
+        await writeFile(join(root, "main.sly"), mending(SPEC()));
+        await write("B.txt", "BAD\n");
+
+        const lines: string[] = [];
+        const generator = new FakeGenerator(SCRIPTS);
+        const { instances } = await build(generator, {}, lines);
+
+        expect(statuses(instances)).toEqual(["k:A pass (never evaluated)", "k:B fail (never evaluated)"]);
+        expect(instances[1]!.errors).toEqual(["has BAD"]);
+        expect(generator.executed).toHaveLength(1);
+        expect(lines).toContain("k:B: the update changed nothing, so it is not evaluated again");
+        expect(lines.some((line) => line.startsWith("k:B: failed evaluation, updating to fix (1 of 2):"))).toBe(true);
+    });
+
+    test("leaves an instance failing with the errors of its last evaluation once the fixes run out", async () => {
+        await writeFile(join(root, "main.sly"), mending(SPEC()));
+        await write("B.txt", "BAD\n");
+
+        const generator = new FakeGenerator(SCRIPTS, { pass: true, errors: [] }, async (round) => write("B.txt", `BAD ${round}\n`));
+        const { instances } = await build(generator);
+
+        expect(statuses(instances)).toEqual(["k:A pass (never evaluated)", "k:B fail (never evaluated)"]);
+        expect(instances[1]!.errors).toEqual(["has BAD"]);
+        expect(generator.executed).toHaveLength(2);
+        expect(generator.resumed).toEqual([undefined, "e1"]);
+        expect(await read("B.txt")).toBe("BAD 2\n");
+    });
+
+    test("with fixes 0 a failing instance is never updated", async () => {
+        await writeFile(join(root, "main.sly"), mending(SPEC()));
+        await write("B.txt", "BAD\n");
+
+        const generator = new FakeGenerator(SCRIPTS, { pass: true, errors: [] }, async () => write("B.txt", "GOOD\n"));
+        const { instances } = await build(generator, { fixes: 0 });
+
+        expect(statuses(instances)).toEqual(["k:A pass (never evaluated)", "k:B fail (never evaluated)"]);
+        expect(generator.executed).toHaveLength(0);
+        expect(await read("B.txt")).toBe("BAD\n");
+    });
+
+    test("a fix of an instance the llm created resumes the session of the create", async () => {
+        await writeFile(join(root, "main.sly"), mending(creating(SPEC())));
+        await rm(join(code(), "B.txt"));
+
+        const generator = new FakeGenerator(SCRIPTS, { pass: true, errors: [] }, async (round) => write("B.txt", round === 1 ? "BAD\n" : "GOOD\n"));
+        const { instances } = await build(generator);
+
+        expect(instances.find((entry) => entry.key === "k:B")!.status).toBe("created");
+        expect(generator.executed).toHaveLength(2);
+        expect(generator.resumed).toEqual([undefined, "e1"]);
+        expect(generator.executed[0]).toContain("## The k to create: B");
+        expect(generator.executed[1]).toContain("## The k to update: B");
+        expect(await read("B.txt")).toBe("GOOD\n");
+    });
+});
+
+describe("SlytherInstanceChecker roles", () => {
+    /** Records who every call was asked of: the scripts it writes and the verdicts it gives. */
+    class CastingGenerator extends FakeGenerator {
+        readonly casts: string[] = [];
+
+        override async ask<T>(prompt: string, _schema?: object, _session?: string, cast?: SlytherRole["cast"]): Promise<{ result: T; session: string }> {
+            this.casts.push(`${prompt.includes("Reply with `pass`") ? "judged" : "wrote"} by ${cast ? SlytherRole.fingerprintOf(cast) : "no one"}`);
+
+            return super.ask<T>(prompt);
+        }
+    }
+
+    const LLM = "operation evaluate (id) {\n llm verify { judge it }\n }";
+    const ROLES = (writer: string, judge: string) => `@role engineer "claude-cli" (model: "${writer}")\n@role reviewer "claude-cli" (model: "${judge}")\n`;
+    const staff = (writer: string, judge: string, evaluate = LLM) => writeFile(join(root, "main.sly"), ROLES(writer, judge) + SPEC(evaluate));
+
+    test("every call is asked of whoever plays its role: the scribe writes the scripts, the reviewer judges", async () => {
+        await staff("w1", "j1");
+
+        const generator = new CastingGenerator(SCRIPTS);
+
+        await compile(generator);
+
+        expect(new Set(generator.casts)).toEqual(
+            new Set(["wrote by scribe=engineer@claude-cli(model=w1)", "judged by reviewer=reviewer@claude-cli(model=j1)"]),
+        );
+    });
+
+    test("who judges is part of what evaluates an instance, and who writes is not", async () => {
+        await staff("w1", "j1");
+        await compile(new CastingGenerator(SCRIPTS));
+
+        await staff("w2", "j1");
+        expect(statuses(await compile(new CastingGenerator(SCRIPTS)))).toEqual(["k:A kept", "k:B kept"]);
+
+        await staff("w2", "j2");
+
+        const generator = new CastingGenerator(SCRIPTS);
+
+        expect(statuses(await compile(generator))).toEqual(["k:A pass (what evaluates it changed)", "k:B pass (what evaluates it changed)"]);
+        expect(generator.casts).toContain("judged by reviewer=reviewer@claude-cli(model=j2)");
+    });
+
+    test("a role nobody binds is played by the standard one of its line, and the build says so", async () => {
+        await staff("w1", "j1", 'operation evaluate (id) {\n llm verify (by: "auditor") { judge it }\n }');
+
+        const lines: string[] = [];
+        const generator = new CastingGenerator(SCRIPTS);
+
+        await new SlytherProject(root, generator, { log: (line) => lines.push(line), say: () => {} }).build();
+
+        expect(lines).toContain("warning: nobody plays the auditor, so the reviewer does: bind it with @role auditor to choose who does.");
+        expect(generator.casts).toContain("judged by auditor=reviewer@claude-cli(model=j1)");
+    });
+
+    test("an alias is pinned for the whole build to what it resolves to, and what it judged is evaluated again once that changes", async () => {
+        /** Resolves "newest" to whatever model it is told is the newest now. */
+        class ResolvingGenerator extends CastingGenerator {
+            constructor(private readonly newest: string) {
+                super(SCRIPTS);
+            }
+
+            override async pin(options: Record<string, string>): Promise<Record<string, string>> {
+                return options.model === "newest" ? { ...options, model: this.newest } : options;
+            }
+
+            override async pinRoles(roles: Map<string, SlytherRole["binding"]>, named: string[]): Promise<Map<string, SlytherRole["binding"]>> {
+                return new Map(await Promise.all([...roles].map(async ([role, binding]) => [role, named.includes(role) ? { ...binding, options: await this.pin(binding.options) } : binding] as const)));
+            }
+        }
+
+        const build = async (newest: string) => {
+            const lines: string[] = [];
+            const generator = new ResolvingGenerator(newest);
+            const report = await new SlytherProject(root, generator, { log: (line) => lines.push(line), say: () => {} }).build();
+
+            return { lines, generator, statuses: statuses(report.instances) };
+        };
+
+        await staff("w1", "newest");
+
+        const first = await build("m5");
+
+        expect(first.lines).toContain('reviewer: "newest" resolves to m5');
+        expect(first.generator.casts).toContain("judged by reviewer=reviewer@claude-cli(model=m5)");
+        expect((await build("m5")).statuses).toEqual(["k:A kept", "k:B kept"]);
+
+        const moved = await build("m6");
+
+        expect(moved.lines).toContain('reviewer: "newest" now resolves to m6, no longer m5, so what it judged is evaluated again');
+        expect(moved.statuses).toEqual(["k:A pass (what evaluates it changed)", "k:B pass (what evaluates it changed)"]);
+    });
+
+    test("a project whose roles nobody plays is refused before anything is built or asked", async () => {
+        await writeFile(join(root, "main.sly"), SPEC(LLM));
+
+        await expect(new SlytherProject(root, new SlytherProviders()).build()).rejects.toThrow(
+            'Nobody plays the scribe, nor the engineer who would stand in for it: bind it with @role engineer "<provider>" (model: "<model id>"). The providers are claude-cli.',
+        );
+        expect(await stat(join(root, ".slyther/artifacts/manifest.json")).then(() => true, () => false)).toBe(false);
     });
 });

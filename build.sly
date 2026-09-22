@@ -36,7 +36,9 @@ class SlytherGenerator {
     What writes the scripts and the markdown a step needs, as an abstract class every backend implements
     with two primitives: `ask`, which sends a prompt and returns a JSON reply that matches a schema, along
     with a session that a later `ask` may resume so a fix continues the same conversation, and `execute`,
-    which runs a prompt with the tools to read and edit the project, for the llm steps of an operation.
+    which runs a prompt with the tools to read and edit the project, for the llm steps of an operation,
+    and returns the text of the reply along with a session that a later `execute` may resume, for the
+    same reason.
 
     On top of them it defines `generate`, which takes a #{SlytherGenerationTask} and returns the files it
     asked for, the dependencies they declare and the session, and `fix`, which resumes the session with the
@@ -46,12 +48,29 @@ class SlytherGenerator {
     It also defines `review`, which asks, in a session of its own so the writer never approves itself,
     whether the files do what the instructions say, reading them without running them, and returns a
     verdict of pass and the errors found.
+
+    Every call names the role it is made for and who plays it, a cast of #{Compiler::SlytherRole}, which is
+    who is asked. `problemsWith` says, before any work is asked for, what keeps the generator from asking
+    for the work of the given casts, one line per problem, and says nothing unless a generator knows better.
+    `pin` returns the options a role is played with, with whatever would resolve differently from one run
+    to the next, like a model named by an alias, pinned to what it resolves to now, and `pinRoles` pins
+    who plays each of the roles named, asking for each set of options once; both leave everything as it
+    is unless a generator knows better. #{SlytherProviders} pins each role with its own provider.
+}
+
+class SlytherProviders {
+    The #{SlytherGenerator} a project runs with: it hands every call to the provider that plays the role of
+    its cast, making each provider once. The providers are claude-cli, a #{ClaudeCLIGenerator}. Its
+    `problemsWith` names, once per role, a role nobody plays, with the `@role` line that would bind it, a
+    provider that is not one of these, and whatever the provider says of the options it is handed. A call
+    whose role nobody plays, or with no role, must throw an error, since no model is ever picked for it.
 }
 
 class SlytherTracedGenerator {
     A #{SlytherGenerator} that wraps another and hands it every call, printing, through the log it is
     given, each prompt before it is sent, with the session it resumes if any, and each reply after, with
-    how long it took: the JSON of an `ask`, the text of an `execute`. It is what --verbose turns on.
+    how long it took and the session it opened: the JSON of an `ask`, the text of an `execute`. It is
+    what --verbose turns on.
 }
 
 class SlytherGenerationTask {
@@ -68,14 +87,20 @@ class SlytherGenerationTask {
 
 class ClaudeCLIGenerator {
     A #{SlytherGenerator} backed by the Claude Code CLI, `claude` unless the SLYTHER_CLAUDE environment
-    variable names another executable, with the model SLYTHER_MODEL names, else the CLI's default, and the
-    effort SLYTHER_EFFORT names, else low, since writing a script from its rules needs little and a high
-    effort keeps the model reasoning for minutes on an ambiguous one. `ask` runs it in print mode with every tool disabled, the prompt
+    variable names another executable, asking the model and with the effort the options of whoever plays
+    the role of the call name, and never the default of the CLI, which is whatever whoever runs it set. It
+    takes the options model, which it requires, and effort; any other is a problem, and so is a model
+    named by an alias the CLI resolves by whoever runs it, default, best or opusplan, since two people
+    would ask different models. The alias of a family, opus, sonnet, haiku or fable, with or without the
+    context window it asks for, is taken: `pin` asks it the smallest prompt there is and reads, among the
+    models the reply says it used, the one of its family, since the CLI also asks a small model of its
+    own, keeping the context window the alias asked for. None or more than one of the family must throw
+    an error rather than guess. A full id is pinned as it is, with no call. `ask` runs it in print mode with every tool disabled, the prompt
     on stdin, the JSON output format and the schema as its structured output, resuming the session when
     given one, and returns the structured output and the session id of the reply. `execute` runs it in
     print mode in the given directory with the tools to read, search and edit files and to run commands
-    allowed, and returns the text of the reply. Either throws when the CLI does not reply, or replies with
-    an error.
+    allowed, resuming the session when given one, and returns the text and the session id of the reply.
+    Either throws when the CLI does not reply, or replies with an error.
 }
 
 class SlytherVerifier {
@@ -89,7 +114,15 @@ class SlytherVerifier {
     nothing: list with no args must exit 0, and, when the id alone locates an artifact of the kind, locate
     must find the first id list prints, so list prints the ids locate takes; the others must exit 0 or 1
     given the first id list prints, or a sample id when it prints none, with a sample value for every
-    param they take after the id, and print nothing when they exit 1. When signature exits 0, every line it prints must
+    param they take after the id, and print nothing when they exit 1; signature and uses must exit 0 given
+    an id list printed, since that artifact exists.
+
+    A sample says nothing of a script that reads the wrong arg, or asks for one it is never given, since
+    either exits 1 as a missing artifact does. So when the id list prints is an instance the project
+    declares, locate, signature and uses are run with the args that instance runs with, filled as the
+    check fills them, and must exit 0, since list says it exists; and list runs locate with them too,
+    whether or not locate takes the id alone. An id no instance declares keeps its samples. When
+    signature exits 0, every line it prints must
     have the `key shape` form, and when uses exits 0, every line must have the `kind:id key` form.
 
     The expand of a composite kind is also run, with a sample value for each of its params: it must exit 0
@@ -118,10 +151,21 @@ class SlytherArtifactManifest {
 class SlytherArtifactBuilder {
     Brings the artifacts folder in line with a list of #{Compiler::SlytherArtifactKind}, given the root of
     the project, the folder relative to it and a #{SlytherGenerator}. Every kind with operations gets a
-    folder per operation, `kind/operation`, holding a script per deterministic step, named after the step
+    folder per operation, `kind/operation`, where the kind is its name with the `::` of its namespace
+    written as a dot, holding a script per deterministic step, named after the step
     with the extension of its #{SlytherRuntime}, a markdown per llm step, and operation.md for an
     operation that is not deterministic. The operations locate, list, signature and uses are built before
     the others, since the others may run them.
+
+    A script waits only for the scripts of the operations it is offered, since it may run them and its
+    verification runs list and locate, so everything else is written side by side, up to four scripts at
+    once unless the build is given another number: the kinds never wait for each other, and within a kind
+    locate is built first, then list, then signature and uses at once, since neither needs the other, and
+    then every other operation at once. The scripts that run the project wait for everything before them.
+    Installs and verifications run one at a time, since an install changes what every script runs with,
+    and the manifest is saved after every file, one save after the other. Once a script fails, nothing
+    that has not started is written, what is under way finishes and is recorded, and the first failure
+    is what the build fails with.
 
     The input hash of a step is the hash of its closure hash, the scope hash of its operation, the scope
     hash of its kind, its lang and its path, so it changes when the step, the rules or the operation
@@ -140,7 +184,8 @@ class SlytherArtifactBuilder {
     markdown to follow for an llm one. A script is asked from the generator with a
     #{SlytherGenerationTask}: its instructions hold the rules of the kind, the operation and its params,
     the step, the conventions every script follows and the commands that run the deterministic operations
-    of the kind built before it, never the ones built after, so what a script may run is what was written
+    of the kind built before it, save that signature and uses are never offered each other, and never the
+    ones built after, so what a script may run is what was written
     without knowing of it and no script can run one that runs it back, and its context holds the prose of
     every artifact the kind, the operation or the step reference. The generator reads no files while it writes a script, so wherever
     these hold the prose of a `ref`, they hold the text of its file instead, while the markdown of an llm

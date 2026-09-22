@@ -19,7 +19,7 @@ command init {
 }
 
 command build {
-    Input: the --max and --verbose flags
+    Input: the --max, --fixes and --verbose flags
 
     Compiles the current #{Project::SlytherProject} using the #{Project::SlytherProject::build} method, prints
     what it did to every file and what happened to every instance with its errors, an emitted instance

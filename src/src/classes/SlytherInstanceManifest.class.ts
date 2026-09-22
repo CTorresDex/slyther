@@ -39,8 +39,10 @@ export class SlytherInstanceManifest {
                 signature?: string[];
                 /** What every instance it references looked like when it was evaluated. */
                 dependencies: Record<string, { contentHash: string; signature?: string[] }>;
-                /** The hash of the scripts and prompts it was evaluated with. */
+                /** The hash of the scripts and prompts it was evaluated with, and of who judged it. */
                 evaluatedWith: string;
+                /** Who last wrote it: the role, who played it and how. A record of where its code came from, never a reason to write it again. */
+                writtenBy?: string;
                 result: "pass" | "fail" | "missing" | "orphan";
                 errors: string[];
             }

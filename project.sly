@@ -16,14 +16,24 @@ class SlytherProject {
       `../artifacts`, so moving the code never leaves an operation pointing at nothing
     - .slyther/build
     - .slyther/build/parser.json: The JSON representation of the SlytherScript parsed from main.sly after a build
+    - .slyther/packages/name: The packages installed, each the folder a package manager copied, whose
+      main.sly an `@import "name"` reads, see #{Compiler::SlytherParser}
     - .slyther/artifacts: The operations of every kind as built, see #{Build::SlytherArtifactBuilder}
     - .slyther/artifacts/manifest.json: The #{Build::SlytherArtifactManifest}
     - .slyther/instances/manifest.json: The #{Check::SlytherInstanceManifest}
     - .slyther/instances/expanded/kind/name.sly: What the instance of a composite kind emitted, see
       #{Check::SlytherInstanceChecker}
 
-    .slyther/build is ignored by version control, .slyther/artifacts and .slyther/instances are committed,
-    so a checkout runs the operations without building them again and a check evaluates only what changed.
+    .slyther/build is ignored by version control, .slyther/artifacts, .slyther/instances and
+    .slyther/packages are committed, so a checkout runs the operations without building them again and a
+    check evaluates only what changed.
+
+    The packages are committed because what they hold is an input of everything that is: the prose of a
+    packaged kind is in the closure hash of every artifact built from it, so a checkout without them
+    holds the scripts and not what they were built from, and its main.sly does not even parse. They are
+    prose, of the size of prose, and the diff of an upgrade is what explains the scripts that changed
+    with it. Ignoring them would only be worth it against a registry that serves a version again by its
+    hash, which a folder a package manager copied from the machine it was published on is not.
 
     Its static `of` takes the root and what the constructor takes besides the folder of code, parses the
     entry point with #{Compiler::SlytherParser} and returns the project pointed at the folder its `@src`
@@ -63,6 +73,17 @@ method SlytherProject::buildArtifacts {
     Groups the parsed script into every #{Compiler::SlytherArtifactKind} and every #{Compiler::SlytherRunScript},
     prints their warnings, and builds their operations and scripts into .slyther/artifacts with
     #{Build::SlytherArtifactBuilder}, returning what it did to every file: built, rebuilt, kept or removed
+
+    Before it builds anything, it makes sure every role the work of the project asks for is played: the
+    role of every step and of every operation of its kinds, and the scribe and the reviewer that write
+    and review its scripts when it has any. Whatever the generator says keeps it from asking for that work
+    throws, every problem at once, and a role played by the standard role of its line because nobody
+    binds it is warned about, see #{Compiler::SlytherRole}. Then it pins who plays each of those roles with
+    the generator, once per build, so every call of the build asks the same model even when an alias
+    starts resolving to another halfway, and what is recorded, who judged and who wrote, names what was
+    really asked. It says what every alias resolved to, and, against what it resolved to the build before,
+    kept in .slyther/build/roles.json, when it now resolves to another: what a judge gave then is
+    evaluated again, since who judges is part of what evaluates an instance.
 }
 
 method SlytherProject::run {

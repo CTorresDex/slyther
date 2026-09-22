@@ -37,8 +37,8 @@ class FakeGenerator extends SlytherGenerator {
         return { result: { files: [{ path, content: `${this.scripts[path]}\n` }], dependencies: {} } as T, session: "s" };
     }
 
-    override async execute(): Promise<string> {
-        return "";
+    override async execute(): Promise<{ text: string; session: string }> {
+        return { text: "", session: "e" };
     }
 }
 

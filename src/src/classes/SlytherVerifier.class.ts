@@ -5,6 +5,8 @@ import type { SlytherRuntime } from "./SlytherRuntime.class.ts";
 export class SlytherVerifier {
     /** The operations that change nothing when run, so their scripts can be run to check them. */
     private static readonly READ_ONLY = ["locate", "list", "signature", "uses"];
+    /** The read-only operations that describe an artifact that exists, so they must exit 0 for an id list prints. */
+    private static readonly DESCRIBING = ["signature", "uses"];
     /** The id an operation is run with when list prints none, and the value every param of an expand is run with. */
     static readonly SAMPLE = "sample";
     /** How long a script gets by default to do what it does before it is killed, with everything it spawned, and counted as a failure. */
@@ -26,7 +28,12 @@ export class SlytherVerifier {
      * script is checked for syntax, and the scripts of the read-only operations are also run, with the
      * script of list when the step is not list itself, to get a real id to run them with, and with the
      * script of locate when the step is list, since locate must find every id list prints. A read-only
-     * operation that takes params after the id is run with a sample value for each of them. The script
+     * operation that takes params after the id is run with a sample value for each of them. A signature or
+     * uses run with an id list printed must exit 0, since that artifact exists. When the id list printed
+     * is an instance the project declares, what runs with it is given the args that instance runs with, as
+     * the check will give them, and must exit 0, a locate included: a sample says nothing of a script that
+     * reads the wrong arg, or asks for one it is never given, since either exits 1 as a missing artifact
+     * does, and only a real artifact that it must find tells them apart. The script
      * of an expand is run with the sample args given: it must exit 0 and print what validate accepts.
      * Every run is given #{TIMEOUT} to finish: a script that outruns it is killed, with everything it
      * spawned, and fails, so a script that hangs or spawns without end never passes.
@@ -39,6 +46,11 @@ export class SlytherVerifier {
         params?: number;
         list?: { script: string; runtime: SlytherRuntime };
         locate?: { script: string; runtime: SlytherRuntime };
+        /**
+         * The args an operation runs with for an id list printed, as the check would give them, or undefined
+         * when nothing says what they are. Without it, locate is run with the id alone.
+         */
+        argsOf?: (operation: string, id: string) => string[] | undefined;
         expand?: { args: string[]; validate: (output: string) => string | null };
     }): Promise<string | null> {
         const check = await ProcessUtils.run(step.runtime.check(step.script), { cwd: this.cwd, timeout: this.timeout });
@@ -82,19 +94,23 @@ export class SlytherVerifier {
 
             const [id] = SlytherVerifier.linesOf(list.stdout);
 
-            if (id === undefined || !step.locate) {
+            const args = id === undefined ? undefined : step.argsOf ? step.argsOf("locate", id) : [id];
+
+            if (args === undefined || !step.locate) {
                 return null;
             }
 
-            const located = await ProcessUtils.run([...step.locate.runtime.run(step.locate.script), id], { cwd: this.cwd, timeout: this.timeout });
+            const located = await ProcessUtils.run([...step.locate.runtime.run(step.locate.script), ...args], { cwd: this.cwd, timeout: this.timeout });
 
             return located.code === 0
                 ? null
-                : `${step.script} printed the id "${id}" but ${step.locate.script} does not find it: list must print the ids locate takes.`;
+                : `${step.script} printed the id "${id}" but ${step.locate.script} does not find it given ${SlytherVerifier.quoted(args)}: list must print the ids locate takes, and locate must read them as they are given.${SlytherVerifier.tail(located.stderr)}`;
         }
 
-        const id = (await this.firstId(step.list)) ?? SlytherVerifier.SAMPLE;
-        const args = [id, ...SlytherVerifier.samples(step.params)];
+        const listed = await this.firstId(step.list);
+        const id = listed ?? SlytherVerifier.SAMPLE;
+        const declared = listed === undefined ? undefined : step.argsOf?.(step.operation, listed);
+        const args = declared ?? [id, ...SlytherVerifier.samples(step.params)];
         const run = await ProcessUtils.run([...step.runtime.run(step.script), ...args], { cwd: this.cwd, timeout: this.timeout });
         const timeout = this.timedOut(step.script, run);
 
@@ -108,6 +124,16 @@ export class SlytherVerifier {
 
         if (run.code === 1 && run.stdout.trim()) {
             return `${step.script} must print nothing when it exits 1, but given "${id}" it printed:\n${run.stdout}`;
+        }
+
+        // An id list printed exists, so whatever runs with the args its instance runs with must find it.
+        if (run.code === 1 && declared !== undefined) {
+            return `${step.script} must exit 0 given ${SlytherVerifier.quoted(args)}, the args of "${listed}", which list prints so it exists, but exited 1: it reads the wrong arg, or asks for one it is not given.${SlytherVerifier.tail(run.stderr)}`;
+        }
+
+        // An id list printed exists, so a signature or uses that says it does not is broken, not empty.
+        if (run.code === 1 && listed !== undefined && SlytherVerifier.DESCRIBING.includes(step.operation)) {
+            return `${step.script} must exit 0 given "${id}", which list prints so it exists, but exited 1:\n${run.stderr}`;
         }
 
         const pattern =
@@ -126,6 +152,15 @@ export class SlytherVerifier {
         return run.code === ProcessUtils.TIMED_OUT
             ? `${script} did not finish in ${this.timeout}ms and was killed, with everything it spawned: it must do its work and exit, and it must never run a script that runs it back.`
             : null;
+    }
+
+    /** What a script said on stderr, on a line of its own, or nothing when it said nothing. */
+    private static tail(stderr: string): string {
+        return stderr.trim() ? `\n${stderr}` : "";
+    }
+
+    private static quoted(args: string[]): string {
+        return args.map((arg) => `"${arg}"`).join(" ");
     }
 
     /** A sample value for every param of the operation after the id. */

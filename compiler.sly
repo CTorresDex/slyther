@@ -26,7 +26,8 @@ class SlytherArtifact {
     - references: `kind:name` of the references found in the artifact prose and of the types of its args, defined as \#{Reference}, escaped as \\#{Reference}, if the symbol is not found, it must throw an error.
       The text of a file is opaque: nothing in it is read as a reference
     - hash: The hash of the artifact, the name, the args, the qualifiers, the content and, when there is one, the source,
-      so a change to the file of a `from` or a `ref` changes it
+      so a change to the file of a `from` or a `ref` changes it. A `by` among the args is left out: who does
+      the work is not what the work is, see #{SlytherRole}
 }
 
 class SlytherFolderSource {
@@ -68,11 +69,14 @@ class SlytherArtifactKind {
     - closureHash: The closure hash of the kind, so it changes whenever its rules or any of its operations do
     - scopeHash: The scope hash of the kind, so it changes whenever its rules do but not when an operation does
     - lang: The language of the kind, if its configuration declares one
+    - by: The role its configuration declares its work is done by, if any, see #{SlytherRole}
+    - packaged: The package the kind was imported from, if the project did not declare it itself
     - params: The shape of every instance of the kind: the params its operations are run with, as
       `name: type` pairs in the order written, after the implicit id
     - operations: Every operation of the kind in the order written, each with its #{SlytherArtifact},
       its closure hash, its scope hash, its params, whether it is deterministic, whether it is built in,
-      and its steps, and each step with its #{SlytherArtifact}, its closure hash and, when it is
+      the role it declares with by, if any, the role that runs its markdown when it is not deterministic,
+      and its steps, and each step with its #{SlytherArtifact}, its closure hash, its role and, when it is
       deterministic, its lang. A step is of kind llm or deterministic
     - warnings: The warnings found while grouping the kind, in the order found
 
@@ -102,12 +106,33 @@ class SlytherArtifactKind {
     An instance may only give args the kind declares as params: any other must throw an error, naming the
     instance and what the kind takes, since an arg nothing reads is a typo that would otherwise be lost.
 
-    The args of a kind after its params, and the args of a step, are configuration, and the only
-    configuration is lang: any other must throw an error, and so must lang on an llm step. A step declares
-    no params, it receives the params of its operation, and a type as a step arg must throw an error.
+    The args of a kind after its params, and the args of a step, are configuration, and the configuration
+    is lang and by: any other must throw an error, and so must lang on an llm step. A step declares no
+    params, it receives the params of its operation, and a type as a step arg must throw an error. An
+    operation may write a by among the params it narrows to, and no other configuration. A by must name
+    one of the roles of #{SlytherRole}, and a kind may not declare a param named by.
+
+    Every step is done by a role. A deterministic step is work that writes, its script; an llm step judges
+    in evaluate and writes anywhere else. The by of the step decides, and one of the other line must throw
+    an error naming the roles it may take. A script is mechanical whatever it serves, so it is written by
+    the scribe unless its own step says otherwise. An llm step takes the by of its operation, then the one
+    of its kind, whichever is of the line of its work, since a kind done by an architect says nothing of
+    who judges it; else the engineer when it writes and the reviewer when it judges.
+    The markdown of an operation that is not deterministic runs in a single session, so it is run by the
+    most demanding role among its llm steps.
 
     The lang of a deterministic step is the one its args declare, else the one of its kind, else the one
     of the #{ParsedSlytherScript}, and when none declares it, it must throw an error.
+
+    The #{ParsedSlytherScript} is only the last word for a kind the project declares itself. The `@lang`
+    of whoever imports a package says nothing about the scripts of a kind that package ships: those rules
+    were written against a language of their own, and a kind whose rules name `index.ts` would otherwise
+    be built as python scripts in a python project, which is a build that works and is wrong. So a kind
+    that came from a package inherits nothing from the project, and one that declares no lang, on itself
+    or on the step, must throw an error naming the package it came from.
+
+    A kind is built into a folder named after it, with the `::` of its namespace written as a dot, since
+    a colon is not a name every file system reads.
 
     The qualifiers are deterministic, which only an operation may have, and demanded, which only a kind
     may have: any other qualifier, or one written on anything else, must throw an error. A deterministic
@@ -172,14 +197,35 @@ class SlytherBuiltinOperation {
 
     - list (): Prints the id of every artifact of the kind that exists, one per line, and exits 0
     - signature (id: string): Prints the public shape of the artifact, one member per line as `key shape`,
-      where the key is the stable name of the member and the shape is its type or signature, without
-      bodies, private members or comments. Anything whose addition breaks the artifacts that use this one,
-      like a required constructor param, is printed as a change of an existing line and never as a new
-      line. Prints nothing and exits 1 when the artifact does not exist
+      where the key is how code outside reaches the member, its name for what the artifact exports at
+      the top level and `Owner.member` for a public member of an exported class or object, and the shape
+      is its type or signature, without bodies, private members or comments. Anything whose addition
+      breaks the artifacts that use this one, like a required constructor param, is printed as a change
+      of an existing line and never as a new line. It reads every segment locate prints. Prints nothing
+      and exits 1 when the artifact does not exist, and exits 0 whenever it does
     - uses (id: string): Prints one line per artifact this one depends on, as `kind:id key` for every
       member of it this artifact uses, as `kind:id *` when it uses it as a whole but does not depend on
       the members it may gain, and as `kind:id **` when it depends on every member, including the ones
-      it may gain. Prints nothing and exits 1 when the artifact does not exist
+      it may gain. Every key is written as the signature of that artifact prints it: the name of what it
+      imports, and `Owner.member` for every member it reaches through it, never the owner alone. It never
+      prints the artifact itself, and it reads every segment locate prints. Prints nothing and exits 1
+      when the artifact does not exist, and exits 0 whenever it does
+}
+
+class SlytherRole {
+    The roles the work of a project is done by, a closed vocabulary so a script means the same wherever it
+    is read. Three write, from the lightest work to the most demanding: scribe, for mechanical code like
+    the scripts of a kind; engineer, for the code of an instance; architect, for code where design
+    matters. Three judge, the same way: checker, for quick checks; reviewer, for a review against the
+    requirements; auditor, where a false pass is costly. Engineer and reviewer are the standard role of
+    their line.
+
+    Who plays a role is bound by the project with `@role`, see #{SlytherParser}: the provider asked and the
+    options handed to it as they are. A role nobody binds is played by the standard role of its line, and
+    one whose standard role nobody binds either is played by nobody, which the generator refuses before
+    any work is asked for, see #{Project::SlytherProject}. What a cast is recorded as names the role, who
+    plays it, the provider and the options in a fixed order, so two casts are recorded alike exactly when
+    the same provider is asked the same way.
 }
 
 class ParsedSlytherScript {
@@ -191,6 +237,10 @@ class ParsedSlytherScript {
     - lang: The language declared by the `@lang` line, if any
     - src: The folder the code of the project lives in, declared by the `@src` line, if any, resolved
       against the script that declared it
+    - packages: The package every artifact an `@import` of a package brought in came from, keyed by
+      name, so what a package ships is told apart from what the project declares itself
+    - roles: Who plays every role the project binds with `@role`, keyed by the role: the provider, the
+      options, and where the line was written. It changes no hash
 }
 
 class SlytherRunScript {
@@ -250,8 +300,29 @@ class SlytherParser {
     declares it, so importing never re-homes it, and a script is only read once no matter how many
     times it is imported, so scripts may import each other.
 
+    An `@import "name"` line, written as a bare name rather than a path, imports a package: the
+    main.sly of `.slyther/packages/name`, the folder the project installs its packages in, unless the
+    parser is given another. Anything with a separator, a dot or a drive is a path, so a package is
+    never confused with one, and a package that is not installed must say so naming the package and
+    where it was looked for, never as a path that could not be read.
+
+    A package is imported whole and never by the artifact: what an artifact means is what it references,
+    so taking one out of a package would leave a reference pointing at nothing, and a type that resolves
+    to nothing is left out without a word. Whatever a package pulls in keeps the name of the package
+    while it is read, however many relative imports away it was written, so what it declares is known to
+    be its.
+
     An `@lang "name"` line declares the language of the project, the one a deterministic step is written
     in when neither it nor its kind declares one. Writing it twice, in any script, must throw an error.
+
+    An `@role name "provider" (option: "value", ...)` line binds who plays one of the roles of
+    #{SlytherRole}: the provider asked, and the options handed to it as they are, each a quoted string, the
+    parens optional. Only the project binds roles, in its scripts and whatever they import by path: a
+    package says what its work needs with by and leaves who does it to whoever uses it, so a package that
+    binds one must throw an error. A name that is not a role, a role bound twice, naming both lines, an
+    option that is not a quoted string or an option given twice must throw an error. Switching who plays
+    every role is then switching one import, and it changes no hash: only who judges reaches what an
+    instance was evaluated with, see #{Check::SlytherInstanceChecker}.
 
     An `@src "path"` line declares where the code of the project lives, the folder every instance is
     written to and every script, operation and LLM runs from. The path is resolved relative to the script
@@ -261,8 +332,14 @@ class SlytherParser {
     An `@artifact Name (params) (config) { rules }` line declares a kind, as an artifact of the built-in
     kind artifact, and is the only way to make it available: a declaration of a kind that was not declared
     before it must throw an error, and so must writing a kind as a plain `artifact Name` declaration. The
-    braces are optional, and a kind is always declared globally, whatever `@use` is in effect. The built-in
-    kinds are namespace, operation, llm and deterministic.
+    braces are optional, and the built-in kinds are namespace, operation, llm and deterministic.
+
+    A kind is declared in the namespace it is written in, as anything else is, and the kind a declaration
+    opens with is looked up the way a reference is: in that namespace, then in each enclosing one, then
+    globally. That is what lets two packages ship a kind of the same name, `Util` and `Util`, and lets
+    whoever imports them both name the one it means. A kind that is declared somewhere the declaration
+    cannot see it must throw an error naming every namespace that declares it, so the answer is to write
+    it qualified or to open its namespace, never to guess.
 
     Both parens are optional, and they are read as a `@run` reads its own: when there is only one, it holds
     the params when it declares a type and the configuration otherwise, and when there are two, a type in
