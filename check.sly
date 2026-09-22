@@ -30,17 +30,23 @@ class SlytherInstanceManifest {
     - signature: The `key shape` lines signature printed, when the kind prints them
     - dependencies: For every instance it references, the content hash and the signature it had when
       this one was evaluated
-    - evaluatedWith: The hash of every script and prompt that takes part in evaluating an instance of the
-      kind, as built: locate, signature, uses and evaluate, and of who plays the judge of every llm step
-      of evaluate, since a verdict is only as good as whoever gave it
+    - evaluatedWith: The hash of every script that reads an instance of the kind, as built: locate,
+      signature, uses and expand, so what an instance looks like is known to have been read the same way
+    - checks: Every step of the evaluate of the kind, keyed by its name, with the hash of its script or
+      its prompt as built, and of who plays the judge of an llm step, since a verdict is only as good as
+      whoever gave it, whether it passed, and the errors it reported. Absent in a manifest written
+      before version 4, which recorded evaluate as a whole in evaluatedWith
     - writtenBy: Who last wrote it, as a cast of #{Compiler::SlytherRole} is recorded: where its code came
       from, never a reason to write it again
-    - result: pass, fail, missing or orphan, and errors: what evaluate reported
+    - result: pass, fail, missing or orphan, and errors: what evaluate reported, every check together
 
-    It records the version it was written with, 3, so one written before is brought forward: every
+    It records the version it was written with, 4, so one written before is brought forward: every
     instance is taken to have been brought in line with the rules of its kind and with its declaration as
     they are now, so what it already complies with is not updated again, only a change made from then on
-    is noticed, and its next update carries no diff rather than one against nothing. Loading a manifest
+    is noticed, and its next update carries no diff rather than one against nothing. What it was
+    evaluated with is not taken as seen: a manifest of version 3 knows no check, so every check of every
+    instance is run once, and only an instance that fails one is updated, since what it must do did not
+    change with the version. Loading a manifest
     that does not exist gives an empty one at the current version, and it is saved with its version and
     with its instances sorted.
 }
@@ -63,6 +69,16 @@ class SlytherInstanceChecker {
     When what it prints is not valid, the instance fails with the reason and emits nothing. Since it has
     no code to evaluate, it is reported as expanded, with how many instances it emitted, and every
     emitted instance is recorded with it as its parent and reported under it.
+
+    An asset is an instance of its own, keyed `asset:name`: one the script declares outside any trait,
+    or inside a trait that some kind adopts, and never one of a trait nobody adopts. It is a file or a
+    folder copied as it is, so Slyther brings it in line itself, before any other instance, with no
+    script and no llm: it is missing when nothing is at where it lands, and created there with
+    compile; it fails when what is there hashes unlike its source, whether the copy was edited or the
+    source changed, and is copied again with compile, whole, over whatever is there; it passes when
+    the two hash alike, and is kept when they did last time as well. A folder is hashed as
+    #{Compiler::SlytherFolderSource} hashes it, and copied without node_modules or .git. To make a copy
+    its own, a project drops the asset.
 
     An instance of a demanded kind is not declared at all: it exists because the uses of an instance
     that has code named it, as `kind:id`, and what those uses ask of it is the whole of its spec. So
@@ -115,8 +131,16 @@ class SlytherInstanceChecker {
 
     Otherwise its content hash, its signature and what it uses are computed, and it is
     checked for change: it changed when it was never evaluated, when its spec hash changed, when the
-    rules of its kind changed, when its content hash changed, when what evaluates it changed, when it
+    guidance of its kind changed, when its content hash changed, when what reads it changed, when any
+    check of its kind changed, when it
     failed last time and compile is on, or when a dependency changed in a way it uses.
+
+    The rules of a kind are its guidance hash, see #{Compiler::SlytherArtifactKind}: what a writer was
+    told and nothing checks. A rule that changed is not a change of what the instance must do that
+    the code must be brought in line with blindly, it is a check that changed: the instance is
+    evaluated first, and only what fails is updated. And since every check is recorded on its own, only
+    the checks that changed are run, and the verdict of every other stands as recorded, so tightening
+    one rule costs one check per instance, never one rewrite. Whatever else changed runs every check.
 
     Whatever changed is brought in line with the update operation of its kind before it is evaluated,
     when compile is on and its kind has one, since the prose rules over the code and the evaluate of a
@@ -147,10 +171,13 @@ class SlytherInstanceChecker {
     now, and the move is reported once, by the check that notices it.
 
     Evaluating runs the evaluate operation of the kind: every deterministic step as its script with the
-    id, failing with what it prints when it exits with a code other than 0, then every llm step as its
+    id, or, for the check of a rule, with the segments locate printed, as it printed them, and the args
+    of the instance in its environment, one `SLYTHER_PARAM` variable per param of evaluate, failing with
+    what it prints when it exits with a code other than 0, then every llm step as its
     markdown followed by what the instance must do, its args and its prose as declared, and the segments
     of its code, asked from the generator for a verdict of pass and errors, each in a session of its own,
-    so the verdict never leans on an earlier one. Every step runs even after one fails, and the instance
+    so the verdict never leans on an earlier one. Every error the check of a rule reports is named
+    after the rule, `Kind::rule: what is wrong`, so a fix and a report say which rule broke. Every step runs even after one fails, and the instance
     fails with the errors of all of them, so a fix sees every discrepancy at once and never satisfies
     one step by breaking the next.
 

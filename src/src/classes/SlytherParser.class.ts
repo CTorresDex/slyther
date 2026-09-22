@@ -16,12 +16,23 @@ export class SlytherParser {
      * What may close the shape of a declaration: a brace and the tail that follows it, or `from "path"` or
      * `ref "path"` and, to report it, a brace written after the path as well.
      */
-    private static readonly BODY = String.raw`\s*(?:(\{)(.*)|(from|ref)\s+["']([^"']+)["']\s*(\{.*)?)?\s*$`;
+    private static readonly BODY = String.raw`\s*(?:(\{)(.*)|(from|ref)\s+["']([^"']+)["']\s*(?:to\s+["']([^"']+)["']\s*)?(\{.*)?)?\s*$`;
+    /** The kind of a file or folder copied into the project from what its ref points at, which lands where its to says. */
+    static readonly ASSET = "asset";
     /** `@artifact Name (params) (config): qualifiers { tail`: declares a kind. Only the name is required, the tail is whatever follows the brace. */
     private static readonly ARTIFACT = new RegExp(
         String.raw`^\s*@artifact\s+([A-Za-z_][\w-]*)\s*(?:\(([^)]*)\))?\s*(?:\(([^)]*)\))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?` + SlytherParser.BODY,
         "d",
     );
+    /** `@trait Name { tail`: declares a trait, which takes no args. The parens are matched to report them. */
+    private static readonly TRAIT = new RegExp(
+        String.raw`^\s*@trait\s+([A-Za-z_][\w-]*)\s*(?:(\([^)]*\)))?\s*(?::\s*([A-Za-z_][\w-]*(?:\s*,\s*[A-Za-z_][\w-]*)*))?` + SlytherParser.BODY,
+        "d",
+    );
+    /** `rule #{Name}`: a kind or a trait adopting a trait or a rule. */
+    private static readonly ADOPT = /^\s*rule\s+#\{\s*([A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*)\s*\}\s*$/d;
+    /** The qualifier of the rule an adoption is read as, which nothing writes by hand. */
+    static readonly ADOPTS = "adopts";
     /** `@run name (params) (config) { tail`: declares a script that runs the project. Only the body is required. */
     private static readonly RUN = new RegExp(
         String.raw`^\s*@run(?:\s+([A-Za-z_][\w-]*))?\s*(?:\(([^)]*)\))?\s*(?:\(([^)]*)\))?` + SlytherParser.BODY,
@@ -67,12 +78,13 @@ export class SlytherParser {
     private static readonly SYMBOL = /^[A-Za-z_][\w-]*(?:::[A-Za-z_][\w-]*)*$/;
     private static readonly NUMBER = /^-?\d+(?:\.\d+)?$/;
     /** The kinds every script starts with. A kind itself is only declared through `@artifact`. */
-    static readonly BUILTIN = ["namespace", "operation", "llm", "deterministic"];
+    static readonly BUILTIN = ["namespace", "operation", "llm", "deterministic", "rule", "trait", "asset"];
     /** The types an arg may have without declaring anything. */
     static readonly TYPES = ["string", "number", "boolean"];
     /** Which kinds may open a block inside the body of which kind. A kind absent here nests nothing. */
     static readonly CONTAINS: Record<string, readonly string[]> = {
-        artifact: ["operation"],
+        artifact: ["operation", "rule"],
+        trait: ["rule", "asset"],
         operation: ["llm", "deterministic"],
         run: ["deterministic"],
     };
@@ -226,7 +238,7 @@ export class SlytherParser {
                 continue;
             }
 
-            const [, artifact, name, args, qualifiers, open, tail, mode, file, both] = declaration;
+            const [, artifact, name, args, qualifiers, open, tail, mode, file, to, both] = declaration;
 
             const kind = this.resolveKind(artifact!, parent.name);
 
@@ -245,7 +257,7 @@ export class SlytherParser {
                 parent.name,
                 args ?? "",
                 qualifiers ?? "",
-                this.bodyOf(open, tail, mode, file, both, `${parent.name}::${name}`),
+                this.bodyOf(open, tail, mode, file, to, both, `${parent.name}::${name}`),
                 SlytherParser.whereOf("", index, line, declaration, { kind: 1, name: 2, args: [3], path: 8 }),
             );
         }
@@ -433,7 +445,7 @@ export class SlytherParser {
             const kind = SlytherParser.ARTIFACT.exec(line);
 
             if (kind) {
-                const [, name, params, config, qualifiers, open, tail, mode, file, both] = kind;
+                const [, name, params, config, qualifiers, open, tail, mode, file, to, both] = kind;
 
                 if (name === SlytherParser.RUN_KIND) {
                     this.fail(`"${name}" is the kind of the scripts declared with @run and cannot be declared as a kind.`);
@@ -448,16 +460,45 @@ export class SlytherParser {
                     scope,
                     this.groupedArgsOf(`The kind "${name}"`, "@artifact", params, config),
                     qualifiers ?? "",
-                    this.bodyOf(open, tail, mode, file, both, name!),
+                    this.bodyOf(open, tail, mode, file, to, both, name!),
                     SlytherParser.whereOf(path, index, line, kind, { kind: "@artifact", name: 1, args: [2, 3], path: 8 }),
                 );
+                continue;
+            }
+
+            const trait = SlytherParser.TRAIT.exec(line);
+
+            if (trait) {
+                const [, name, args, qualifiers, open, tail, mode, file, to, both] = trait;
+
+                if (args) {
+                    this.fail(`The trait "${name}" takes no args: a trait is prose and rules that kinds adopt.`);
+                }
+
+                index = this.declareAt(
+                    lines,
+                    index,
+                    "trait",
+                    name!,
+                    scope ? `${scope}::${name}` : name!,
+                    scope,
+                    "",
+                    qualifiers ?? "",
+                    this.bodyOf(open, tail, mode, file, to, both, name!),
+                    SlytherParser.whereOf(path, index, line, trait, { kind: "@trait", name: 1, args: [], path: 7 }),
+                );
+                continue;
+            }
+
+            if (/^\s*@trait\b/.test(line)) {
+                this.fail(`"${line.trim()}" is not a trait: write it as @trait Name { ... }.`);
                 continue;
             }
 
             const run = SlytherParser.RUN.exec(line);
 
             if (run) {
-                const [, name = SlytherParser.RUN_DEFAULT, params, config, open, tail, mode, file, both] = run;
+                const [, name = SlytherParser.RUN_DEFAULT, params, config, open, tail, mode, file, to, both] = run;
 
                 if (!open && !mode) {
                     this.fail(`The script "${name}" declared with @run must have a body in braces, or take it from a file with from or ref.`);
@@ -473,7 +514,7 @@ export class SlytherParser {
                     SlytherParser.RUN_KIND,
                     this.groupedArgsOf(`The script "${name}"`, "@run", params, config),
                     "",
-                    this.bodyOf(open, tail, mode, file, both, `${SlytherParser.RUN_KIND}::${name}`),
+                    this.bodyOf(open, tail, mode, file, to, both, `${SlytherParser.RUN_KIND}::${name}`),
                     SlytherParser.whereOf(path, index, line, run, { kind: "@run", name: 1, args: [2, 3], path: 7 }),
                 );
                 continue;
@@ -493,13 +534,15 @@ export class SlytherParser {
                 continue;
             }
 
-            const [, artifact, name, args, qualifiers, open, tail, mode, file, both] = declaration;
+            const [, artifact, name, args, qualifiers, open, tail, mode, file, to, both] = declaration;
             const qualified = scope ? `${scope}::${name}` : name!;
 
             const declared = this.resolveKind(artifact!, scope);
 
             if (artifact === "artifact") {
                 this.fail(`A kind is declared as "@artifact ${name}", not "artifact ${name}".`);
+            } else if (artifact === "trait") {
+                this.fail(`A trait is declared as "@trait ${name}", not "trait ${name}".`);
             } else if (declared === undefined) {
                 this.fail(this.unknownKind(artifact!, qualified));
             }
@@ -513,10 +556,38 @@ export class SlytherParser {
                 scope,
                 args ?? "",
                 qualifiers ?? "",
-                this.bodyOf(open, tail, mode, file, both, qualified),
+                this.bodyOf(open, tail, mode, file, to, both, qualified),
                 SlytherParser.whereOf(path, index, line, declaration, { kind: 1, name: 2, args: [3], path: 8 }),
             );
         }
+    }
+
+    /**
+     * Reads a `rule #{Name}` line as the adoption of what it names by the owner: a rule named after the
+     * last word of the name, qualified as adopts, whose prose is the reference alone. The reference
+     * resolves from the scope that holds the owner, never from the owner, so a kind adopting `Errors`
+     * never finds the placeholder it is read as.
+     */
+    private adopt(match: RegExpExecArray, file: string, index: number, owner: string): void {
+        const target = match[1]!;
+        const boundary = target.lastIndexOf("::");
+        const name = boundary < 0 ? target : target.slice(boundary + 2);
+        const qualified = `${owner}::${name}`;
+        const span = SlytherParser.spanOf(match, 1)!;
+        const where: SlytherParser["where"] = {
+            file,
+            line: index,
+            length: match[0].length,
+            kind: { start: match[0].indexOf("rule"), end: match[0].indexOf("rule") + 4 },
+            name: span,
+            entries: [],
+            directive: false,
+        };
+
+        this.map.declarations.push({ name: qualified, artifact: "rule", scope: SlytherParser.scopeOf(owner), file, line: index, last: index, kind: where.kind, at: where.name });
+        this.declare(qualified, "rule", SlytherParser.scopeOf(owner), "", SlytherParser.ADOPTS, where);
+        this.declarations.get(qualified)!.content = `#{${target}}`;
+        this.map.references.push({ file, line: index, ...span, name: target, scope: SlytherParser.scopeOf(owner), owner: qualified, role: "reference" });
     }
 
     /**
@@ -528,16 +599,43 @@ export class SlytherParser {
         tail: string | undefined,
         mode: string | undefined,
         file: string | undefined,
+        to: string | undefined,
         both: string | undefined,
         owner: string,
-    ): { tail: string } | { mode: "from" | "ref"; file: string } | undefined {
+    ): { tail: string } | { mode: "from" | "ref"; file: string; to?: string } | undefined {
         if (both) {
             this.fail(`"${owner}" takes its prose from "${file}", so it cannot have a body in braces as well.`);
 
             return { tail: both.slice(1) };
         }
 
-        return open ? { tail: tail! } : mode ? { mode: mode as "from" | "ref", file: file! } : undefined;
+        return open ? { tail: tail! } : mode ? { mode: mode as "from" | "ref", file: file!, ...(to ? { to } : {}) } : undefined;
+    }
+
+    /**
+     * An asset is a file or folder copied into the project: it takes what it copies with ref, never
+     * from, which embeds text, or a body, and says where it lands with to, which nothing else may.
+     */
+    private checkAsset(artifact: string, qualified: string, body: ReturnType<SlytherParser["bodyOf"]>, where: SlytherParser["where"]): void {
+        const at = SlytherParser.lineOf(where);
+        const boundary = qualified.lastIndexOf("::");
+        const short = boundary < 0 ? qualified : qualified.slice(boundary + 2);
+
+        if (artifact !== SlytherParser.ASSET) {
+            if (body && "to" in body && body.to) {
+                this.fail(`"${qualified}" says where it lands with to, but only an asset lands anywhere: a ${artifact} takes its prose from a file with from or ref alone.`, at);
+            }
+
+            return;
+        }
+
+        if (!body || "tail" in body) {
+            this.fail(`The asset "${qualified}" must point at what it copies: write it as asset ${short} ref "path" to "path".`, at);
+        } else if (body.mode !== "ref") {
+            this.fail(`The asset "${qualified}" takes what it copies with ref, not from: from embeds text, and an asset may be a folder.`, at);
+        } else if (!body.to) {
+            this.fail(`The asset "${qualified}" must say where it lands: write it as asset ${short} ref "${body.file}" to "path".`, at);
+        }
     }
 
     /** Declares the namespace unless something of that name is declared already, which a later declaration may replace. */
@@ -600,7 +698,12 @@ export class SlytherParser {
             body = undefined;
         }
 
-        this.declare(qualified, artifact, scope, args, qualifiers, where);
+        this.checkAsset(artifact, qualified, body, where);
+
+        // Where an asset lands is an arg of it, so its hash and whoever reads it back see it as any other.
+        const landing = body && "to" in body && body.to ? `to: "${body.to}"` : "";
+
+        this.declare(qualified, artifact, scope, landing ? (args.trim() ? `${args},${landing}` : landing) : args, qualifiers, where);
 
         if (artifact === "artifact") {
             this.kinds.add(qualified);
@@ -728,11 +831,27 @@ export class SlytherParser {
                 if (SlytherParser.ESCAPE.test(line) && (SlytherParser.DECLARATION.test(line.replace("\\", "")) || SlytherParser.UNNAMED.test(line.replace("\\", "")))) {
                     escapedAt = line.indexOf("\\");
                     line = line.replace("\\", "");
+                } else if (SlytherParser.ADOPT.test(line)) {
+                    if (!allowed.includes("rule")) {
+                        this.fail(`"${line.trim()}" adopts a rule inside ${artifact} "${owner}", but only a kind or a trait adopts one.`);
+                    } else {
+                        this.adopt(SlytherParser.ADOPT.exec(line)!, file, index, owner);
+                    }
+
+                    if (++index >= lines.length) {
+                        this.fail(`Unterminated ${artifact} "${owner}".`);
+
+                        return { content: StringUtils.dedent(body), end: lines.length - 1 };
+                    }
+
+                    line = lines[index]!;
+                    offset = 0;
+                    continue;
                 } else {
                     const nested = SlytherParser.DECLARATION.exec(line);
 
                     if (nested?.[5] || nested?.[7]) {
-                        const [, child, name, args, qualifiers, open, rest, mode, path, both] = nested;
+                        const [, child, name, args, qualifiers, open, rest, mode, path, to, both] = nested;
 
                         if (allowed.includes(child!)) {
                             index = this.declareAt(
@@ -744,7 +863,7 @@ export class SlytherParser {
                                 owner,
                                 args ?? "",
                                 qualifiers ?? "",
-                                this.bodyOf(open, rest, mode, path, both, `${owner}::${name}`),
+                                this.bodyOf(open, rest, mode, path, to, both, `${owner}::${name}`),
                                 SlytherParser.whereOf(file, index, line, nested, { kind: 1, name: 2, args: [3], path: 8 }),
                             );
 

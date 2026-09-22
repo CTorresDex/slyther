@@ -1,18 +1,43 @@
 @lang "ts"
 
 @artifact class (requirements: string) {
-    1. ALL Classes are defined at src/src/classes/{name}.class.ts, where name is the id written in PascalCase.
-    2. Every class must have only one top level definition, the class. No helper functions, no types, no variables on the top level.
-    3. The functions defined in the class are only from the scope of the class, any general purpose utility function must be defined at the respective utils class called by the name of the type (StringUtils, FunctionUtils, NumberUtils, etc...)
+    Every class lives at src/src/classes/{name}.class.ts, where name is the id written in PascalCase, and
+    holds only the minimum amount of code to fulfill its requirements, following the YAGNI principle.
 
-    4. The class must strictly follow this shape:
-    ```ts
-    // Imports 
-
-    export class {name (PascalCase)} {
-        // class definition
+    rule single-definition: deterministic {
+        The file has only one top level definition, the class. No helper functions, no types, no variables
+        on the top level.
     }
-    ```
+
+    rule shape: deterministic {
+        The class strictly follows this shape:
+        ```ts
+        // Imports
+
+        export class {name (PascalCase)} {
+            // class definition
+        }
+        ```
+    }
+
+    rule helper-outside: negative {
+        Breaks #{class::single-definition} and #{class::shape}: a helper next to the class.
+        ```ts
+        // Imports
+
+        function helper(): void {}
+
+        export class Thing {
+            run(): void { helper(); }
+        }
+        ```
+    }
+
+    rule scoped-methods {
+        The functions defined in the class are only from the scope of the class: any general purpose
+        utility function must be defined at the respective utils class called by the name of the type
+        (StringUtils, FunctionUtils, NumberUtils, etc...)
+    }
 
     operation locate: deterministic {
         Prints src/src/classes/{name}.class.ts and exits 0 if the file exists, otherwise prints nothing and exits 1.
@@ -20,30 +45,11 @@
 
     operation create {
         deterministic scaffold (lang: "ts") {
-            Scaffolds the class as defined at the rules, exits 1 if it already exists.
+            Scaffolds the class with the shape #{class::shape} gives, exits 1 if it already exists.
         }
 
         llm requirements {
-            The class should contain only the minimum amount of code to fulfill the requirements, following YAGNI principle.
-        }
-    }
-
-    operation evaluate (id) {
-        deterministic check (lang: "ts") {
-            Evaluate that:
-
-            1. ALL Classes are defined at src/src/classes/{name}.class.ts, where name is the id written in PascalCase.
-            2. Every class must have only one top level definition, the class. No helper functions, no types, no variables on the top level.
-            3. The class follows strictly the top-level shape defined at the rules.
-
-
-            If it complies with all the rules, exits 0.
-            Otherwise, iterate over each discrepancy, print them to stdout and exit with 1.
-            The print format is: [ERROR_CODE]: [ERROR_MESSAGE]
-        }
-
-        llm verify {
-            1. The functions defined in the class are only from the scope of the class, any general purpose utility function must be defined at the respective utils class called by the name of the type (StringUtils, FunctionUtils, NumberUtils, etc...)
+            Implements the requirements in the class.
         }
     }
 

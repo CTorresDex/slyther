@@ -22,8 +22,11 @@ export class SlytherArtifactManifest {
                 entry?: string;
                 /** The role that runs that markdown. */
                 role?: string;
-                /** Every step, with the role its work is done by: who wrote its script, or who does what its llm step says. */
-                steps: { name: string; kind: "llm" | "deterministic"; path: string; lang?: string; run?: string[]; role?: string }[];
+                /**
+                 * Every step, with the role its work is done by: who wrote its script, or who does what its llm step
+                 * says, and, for the check of a rule, the rule, so it is run with the segments of the instance.
+                 */
+                steps: { name: string; kind: "llm" | "deterministic"; path: string; lang?: string; run?: string[]; role?: string; rule?: string }[];
             }
         >,
         /** Every script that runs the project, keyed by its name: what running it needs to know. */

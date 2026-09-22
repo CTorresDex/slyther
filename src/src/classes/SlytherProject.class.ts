@@ -34,14 +34,14 @@ export class SlytherProject {
     /** What writes the scripts of the deterministic steps, traced when the project is verbose. */
     private readonly generator: SlytherGenerator;
     /** Where the build reports what it does, as plain functions so they can be handed around and spread. */
-    private readonly progress: { log: (line: string) => void; say: (label: string) => void };
+    private readonly progress: { log: (line: string) => void; say: (label: string | (() => string)) => void };
 
     constructor(
         /** The folder the slyther files live in. */
         readonly root: string,
         generator: SlytherGenerator = new SlytherProviders(),
         /** Where the build reports what it does: log prints a finished line, say names what it is waiting on. */
-        progress: { log: (line: string) => void; say: (label: string) => void } = { log: () => {}, say: () => {} },
+        progress: { log: (line: string) => void; say: (label: string | (() => string)) => void } = { log: () => {}, say: () => {} },
         /** verbose: every prompt sent to the llm and every reply are logged. */
         options: { verbose?: boolean } = {},
     ) {
@@ -303,7 +303,15 @@ export class SlytherProject {
 
         if (record.deterministic) {
             for (const step of record.steps) {
-                const process = Bun.spawn([...step.run!, ...args], { cwd: this.src, stdout: "inherit", stderr: "inherit" });
+                // The check of a rule takes the segments of the instance, which locate prints given the params it takes.
+                const handed = step.rule ? await this.segmentsOf(manifest, kind, record.params, args) : args;
+
+                if (handed === undefined) {
+                    return { code: 1, output: "" };
+                }
+
+                const env = step.rule ? Object.fromEntries(record.params.map((param, index) => [`${SlytherInstanceChecker.ENV}${param.name.toUpperCase().replace(/-/g, "_")}`, args[index] ?? ""])) : {};
+                const process = Bun.spawn([...step.run!, ...handed], { cwd: this.src, stdout: "inherit", stderr: "inherit", env: { ...Bun.env, ...env } });
                 const code = await process.exited;
 
                 if (code !== 0) {
@@ -336,6 +344,33 @@ export class SlytherProject {
         const cast = SlytherRole.cast(role, await options.execute.pinRoles(roles, asked.by ? [asked.by.role] : []));
 
         return { code: 0, output: (await options.execute.execute(markdown, this.src, undefined, cast)).text };
+    }
+
+    /**
+     * The segments locate prints for an instance, given the args of an operation and its params, from
+     * which locate is handed the ones it takes by name, or undefined when locate finds nothing.
+     */
+    private async segmentsOf(manifest: SlytherArtifactManifest, kind: string, params: { name: string }[], args: string[]): Promise<string[] | undefined> {
+        const locate = manifest.operations[`${kind}::locate`];
+
+        if (!locate) {
+            throw new Error(`The locate of "${kind}" is not built: run build first.`);
+        }
+
+        const handed = locate.params.map((param) => args[params.findIndex((candidate) => candidate.name === param.name)] ?? "");
+        let stdout = "";
+
+        for (const step of locate.steps) {
+            const process = Bun.spawn([...step.run!, ...handed], { cwd: this.src, stdout: "pipe", stderr: "inherit" });
+
+            stdout = await new Response(process.stdout).text();
+
+            if ((await process.exited) !== 0) {
+                return undefined;
+            }
+        }
+
+        return stdout.split("\n").filter((line) => line.trim().length > 0);
     }
 
     /**

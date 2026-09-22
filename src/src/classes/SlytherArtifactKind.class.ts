@@ -1,4 +1,5 @@
 // Imports
+import { createHash } from "node:crypto";
 import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
 import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import { SlytherBuiltinOperation } from "./SlytherBuiltinOperation.class.ts";
@@ -14,6 +15,15 @@ export class SlytherArtifactKind {
     private static readonly DETERMINISTIC = "deterministic";
     /** The qualifier of a kind whose instances are not declared: they exist because something asked for them. */
     private static readonly DEMANDED = "demanded";
+    /** The qualifier of a rule that is a counterexample: code that breaks the rules it references, never checked against an instance. */
+    private static readonly NEGATIVE = "negative";
+    /** The kind of a rule, and of a trait: prose and rules that kinds adopt. */
+    private static readonly RULE = "rule";
+    private static readonly TRAIT = "trait";
+    /** The operation the check of every rule is a step of. */
+    private static readonly EVALUATE = "evaluate";
+    /** A fenced block of code, which a negative must hold: the code that breaks a rule. */
+    private static readonly FENCED = /```[^\n]*\n[\s\S]*?```/;
     /** The param only a demanded kind takes: what the artifacts that use an instance of it ask of it. */
     private static readonly DEMANDS = { name: "demands", type: "string", optional: false };
     /** The configuration a kind or a step may declare: the lang of its scripts. */
@@ -76,8 +86,32 @@ export class SlytherArtifactKind {
             /** Who runs the markdown of an operation that is not deterministic: the most demanding role among its llm steps. */
             role?: string;
             /** Every step, with the role its work is done by: who writes its script, or who does what its llm step says. */
-            steps: { artifact: SlytherArtifact; closureHash: string; lang?: string; role?: string }[];
+            steps: {
+                artifact: SlytherArtifact;
+                closureHash: string;
+                lang?: string;
+                role?: string;
+                /** Set for the check of a rule: the rule, whoever owns it, and the negatives that break it, which its check must reject. */
+                rule?: SlytherArtifactKind["rules"][number];
+            }[];
         }[],
+        /** Every rule an instance must follow, in the order declared and adopted, with every adoption expanded in place. */
+        readonly rules: {
+            artifact: SlytherArtifact;
+            closureHash: string;
+            /** Checked by a script rather than judged. */
+            deterministic: boolean;
+            /** The lang of the script, when it is deterministic. */
+            lang?: string;
+            /** The kind or the trait that declares the rule, if any: its prose is what the rule is read against. */
+            owner?: { artifact: SlytherArtifact; scopeHash: string };
+            /** Every negative that references the rule: code that breaks it, which its check must reject. */
+            negatives: { artifact: SlytherArtifact; closureHash: string }[];
+        }[] = [],
+        /** Every trait the kind adopts, transitively, in the order adopted. */
+        readonly traits: { artifact: SlytherArtifact; scopeHash: string }[] = [],
+        /** Every asset the traits it adopts declare, in the order adopted: what the project must hold once the kind is declared. */
+        readonly assets: SlytherArtifact[] = [],
     ) {}
 
     /**
@@ -124,7 +158,14 @@ export class SlytherArtifactKind {
 
         for (const artifact of parsed.artifacts) {
             if (artifact.artifact !== "operation") {
-                SlytherArtifactKind.checkQualifiers(artifact, artifact.artifact === "artifact" ? [SlytherArtifactKind.DEMANDED] : []);
+                SlytherArtifactKind.checkQualifiers(
+                    artifact,
+                    artifact.artifact === "artifact"
+                        ? [SlytherArtifactKind.DEMANDED]
+                        : artifact.artifact === SlytherArtifactKind.RULE
+                          ? [SlytherArtifactKind.DETERMINISTIC, SlytherArtifactKind.NEGATIVE, SlytherParser.ADOPTS]
+                          : [],
+                );
             }
 
             if (artifact.artifact === "artifact") {
@@ -189,8 +230,11 @@ export class SlytherArtifactKind {
             }
         }
 
+        SlytherArtifactKind.adopt(parsed, kinds);
+
         for (const kind of kinds.values()) {
             kind.check(parsed);
+            kind.deriveEvaluate();
             kind.addBuiltins(parsed);
             kind.cast();
         }
@@ -202,14 +246,204 @@ export class SlytherArtifactKind {
         return [...kinds.values()];
     }
 
+    /**
+     * Gives every kind its rules: the ones it declares, in the order written, with every adoption
+     * expanded in place, whether of a trait, which brings every rule it declares and adopts, or of a
+     * single rule. A rule is declared inside a kind, inside a trait, or outside any, to be adopted; a
+     * negative references the rules it breaks and is never a rule of anything, and what an adoption
+     * names must be a trait or a rule that is neither, so each of these throws.
+     */
+    private static adopt(parsed: ParsedSlytherScript, kinds: Map<string, SlytherArtifactKind>): void {
+        const artifacts = new Map(parsed.artifacts.map((artifact) => [artifact.name, artifact]));
+        const keyOf = (artifact: SlytherArtifact): string => `${artifact.artifact}:${artifact.name}`;
+        const rules = parsed.artifacts.filter((artifact) => artifact.artifact === SlytherArtifactKind.RULE);
+        const isNegative = (artifact: SlytherArtifact) => artifact.qualifiers.includes(SlytherArtifactKind.NEGATIVE);
+        const isAdoption = (artifact: SlytherArtifact) => artifact.qualifiers.includes(SlytherParser.ADOPTS);
+        const isRule = (artifact: SlytherArtifact) => artifact.artifact === SlytherArtifactKind.RULE && !isNegative(artifact) && !isAdoption(artifact);
+
+        for (const rule of rules) {
+            const parent = artifacts.get(SlytherArtifactKind.parentOf(rule.name));
+
+            if (parent && parent.artifact !== "artifact" && parent.artifact !== SlytherArtifactKind.TRAIT && parent.artifact !== "namespace") {
+                throw new Error(`Rule "${rule.name}" must be declared inside a kind or a trait, or outside any, not inside ${parent.artifact} "${parent.name}".`);
+            }
+
+            if (isNegative(rule)) {
+                if (rule.qualifiers.includes(SlytherArtifactKind.DETERMINISTIC)) {
+                    throw new Error(`Rule "${rule.name}" is negative, a counterexample, so it cannot be deterministic: nothing checks it.`);
+                }
+
+                if (!rule.references.some((reference) => isRule(artifacts.get(reference.slice(reference.indexOf(":") + 1))!))) {
+                    throw new Error(`Rule "${rule.name}" is negative, so it must reference the rule it breaks, as #{Kind::rule}.`);
+                }
+
+                if (!rule.source && !SlytherArtifactKind.FENCED.test(rule.content)) {
+                    throw new Error(`Rule "${rule.name}" is negative but holds no code: a negative is the code that breaks a rule, written in a \`\`\` block, so a check can be run against it.`);
+                }
+            }
+
+            if (isAdoption(rule)) {
+                const target = artifacts.get(rule.references[0]?.slice(rule.references[0].indexOf(":") + 1) ?? "");
+
+                if (!target || (target.artifact !== SlytherArtifactKind.TRAIT && !isRule(target))) {
+                    throw new Error(`"${SlytherArtifactKind.parentOf(rule.name)}" adopts "${rule.content.slice(2, -1)}", which is not a trait or a rule${target && target.artifact === SlytherArtifactKind.RULE ? ": a negative or an adoption cannot be adopted" : ""}.`);
+                }
+            }
+        }
+
+        for (const asset of parsed.artifacts) {
+            const parent = asset.artifact === SlytherParser.ASSET ? artifacts.get(SlytherArtifactKind.parentOf(asset.name)) : undefined;
+
+            if (parent && parent.artifact !== SlytherArtifactKind.TRAIT && parent.artifact !== "namespace") {
+                throw new Error(`Asset "${asset.name}" must be declared inside a trait, or outside any, not inside ${parent.artifact} "${parent.name}".`);
+            }
+        }
+
+        const childrenOf = (owner: string) => rules.filter((rule) => SlytherArtifactKind.parentOf(rule.name) === owner);
+        const assetsOf = (owner: string) => parsed.artifacts.filter((asset) => asset.artifact === SlytherParser.ASSET && SlytherArtifactKind.parentOf(asset.name) === owner);
+        const ownerOf = (rule: SlytherArtifact): SlytherArtifactKind["rules"][number]["owner"] => {
+            const parent = artifacts.get(SlytherArtifactKind.parentOf(rule.name));
+
+            return parent && parent.artifact !== "namespace" ? { artifact: parent, scopeHash: parsed.scopeHashes.get(keyOf(parent))! } : undefined;
+        };
+        const negativesOf = (rule: SlytherArtifact) =>
+            rules.filter((candidate) => isNegative(candidate) && candidate.references.includes(keyOf(rule))).map((negative) => ({ artifact: negative, closureHash: parsed.closureHashes.get(keyOf(negative))! }));
+        const gather = (owner: string, into: SlytherArtifactKind, seen: string[]): void => {
+            for (const child of childrenOf(owner)) {
+                if (isNegative(child)) {
+                    continue;
+                }
+
+                const target = isAdoption(child) ? artifacts.get(child.references[0]!.slice(child.references[0]!.indexOf(":") + 1))! : child;
+
+                if (target.artifact === SlytherArtifactKind.TRAIT) {
+                    if (seen.includes(target.name)) {
+                        throw new Error(`Trait "${target.name}" adopts itself: ${[...seen, target.name].join(" adopts ")}.`);
+                    }
+
+                    into.traits.push({ artifact: target, scopeHash: parsed.scopeHashes.get(keyOf(target))! });
+                    into.assets.push(...assetsOf(target.name));
+                    gather(target.name, into, [...seen, target.name]);
+                    continue;
+                }
+
+                into.rules.push({
+                    artifact: target,
+                    closureHash: parsed.closureHashes.get(keyOf(target))!,
+                    deterministic: target.qualifiers.includes(SlytherArtifactKind.DETERMINISTIC),
+                    owner: ownerOf(target),
+                    negatives: negativesOf(target),
+                });
+            }
+        };
+
+        for (const kind of kinds.values()) {
+            gather(kind.name, kind, [kind.name]);
+
+            for (const rule of kind.rules) {
+                if (rule.deterministic) {
+                    rule.lang = kind.langOf(rule.artifact.as("deterministic", rule.artifact.name, rule.artifact.args), parsed).lang;
+                }
+            }
+        }
+
+    }
+
+    /**
+     * Makes the check of every rule a step of evaluate, before whatever steps it declares, adding the
+     * operation when the kind declares none. A deterministic rule is a deterministic step and any other
+     * an llm step, so an evaluate that gains an llm rule is deterministic no more: the qualifier only
+     * says what its own steps are.
+     */
+    private deriveEvaluate(): void {
+        if (this.rules.length === 0 || this.composite) {
+            return;
+        }
+
+        let evaluate = this.operation(SlytherArtifactKind.EVALUATE);
+
+        if (!evaluate) {
+            const artifact = new SlytherArtifact("operation", `${this.name}::${SlytherArtifactKind.EVALUATE}`, [], [SlytherArtifactKind.DETERMINISTIC], "", []);
+
+            evaluate = { artifact, closureHash: artifact.hash, scopeHash: artifact.hash, params: this.paramsOf(artifact), deterministic: true, builtin: false, steps: [] };
+            this.operations.push(evaluate);
+        }
+
+        const checks = this.rules.map((rule) => {
+            const kind = rule.deterministic ? "deterministic" : "llm";
+            const step = rule.artifact.as(kind, `${this.name}::${SlytherArtifactKind.EVALUATE}::${SlytherArtifactKind.folderOf(rule.artifact.name)}`, rule.artifact.args);
+
+            return { artifact: step, closureHash: rule.closureHash, ...(rule.deterministic ? { lang: rule.lang } : {}), rule };
+        });
+
+        evaluate.steps.unshift(...checks);
+        evaluate.deterministic = evaluate.deterministic && this.rules.every((rule) => rule.deterministic);
+    }
+
+    /** The prose of the kind outside its rules: what a writer is told and nothing checks. */
+    get guidance(): string {
+        return this.artifact.prose;
+    }
+
+    /**
+     * The hash of what the kind says outside its rules: its scope hash and the scope hash of every trait
+     * it adopts, and its scope hash alone when it adopts none.
+     */
+    get guidanceHash(): string {
+        return this.traits.length === 0 ? this.scopeHash : SlytherArtifactKind.hash(this.scopeHash, ...this.traits.map((trait) => trait.scopeHash));
+    }
+
+    /** The hash of everything a writer of an instance is shown: the guidance, every rule and every negative, and the guidance hash alone without rules. */
+    get rulesHash(): string {
+        if (this.rules.length === 0) {
+            return this.guidanceHash;
+        }
+
+        return SlytherArtifactKind.hash(
+            this.guidanceHash,
+            ...this.rules.map((rule) => rule.closureHash),
+            ...this.rules.flatMap((rule) => rule.negatives.map((negative) => negative.closureHash)),
+        );
+    }
+
+    /**
+     * The rules every artifact of the kind must follow, as a writer is shown them: the guidance, then
+     * every rule under its name, saying whether a script or a judge checks it, the prose of every trait
+     * before the rules it brings, and every negative as what never to write. With a folder, the prose
+     * of a ref is read into it; without one, it points at its file.
+     */
+    rulesOf(cwd?: string): string {
+        const text = (artifact: SlytherArtifact) => (cwd === undefined ? artifact.prose : artifact.textIn(cwd));
+        const lines = [text(this.artifact)];
+        const shown = new Set<string>();
+        let owner: string | undefined;
+
+        for (const rule of this.rules) {
+            if (rule.owner?.artifact.artifact === SlytherArtifactKind.TRAIT && rule.owner.artifact.name !== owner) {
+                owner = rule.owner.artifact.name;
+                lines.push("", `### Trait ${owner}`, "", text(rule.owner.artifact) || "(no further description)");
+            }
+
+            lines.push("", `### Rule ${rule.artifact.name} (${rule.deterministic ? "checked by a script" : "judged"})`, "", text(rule.artifact));
+
+            for (const negative of rule.negatives) {
+                if (!shown.has(negative.artifact.name)) {
+                    shown.add(negative.artifact.name);
+                    lines.push("", `#### Never, as ${negative.artifact.name}`, "", text(negative.artifact));
+                }
+            }
+        }
+
+        return lines.join("\n").trim();
+    }
+
+    private static hash(...parts: string[]): string {
+        return createHash("sha256").update(parts.join("\n")).digest("hex");
+    }
+
     /** The name of the kind. */
     get name(): string {
         return this.artifact.name;
-    }
-
-    /** The rules every artifact of the kind must follow, as a pointer to their file when they are a ref. */
-    get rules(): string {
-        return this.artifact.prose;
     }
 
     /** The operation of the given name, if the kind defines it. */
@@ -250,7 +484,10 @@ export class SlytherArtifactKind {
                 }
 
                 this.addImplicitStep(operation, "llm", parsed);
-            } else if (operation.steps.every((step) => step.artifact.artifact === "deterministic")) {
+            } else if (
+                operation.steps.every((step) => step.artifact.artifact === "deterministic") &&
+                !(SlytherArtifactKind.shortOf(operation.artifact.name) === SlytherArtifactKind.EVALUATE && this.rules.some((rule) => !rule.deterministic))
+            ) {
                 this.warnings.push(
                     `Operation "${operation.artifact.name}" has only deterministic steps: qualify it as deterministic.`,
                 );
@@ -259,16 +496,16 @@ export class SlytherArtifactKind {
 
         const unverified = SlytherArtifactKind.VERIFIED.filter((name) => this.operation(name));
 
-        if (unverified.length > 0 && !this.operation("evaluate")) {
+        if (unverified.length > 0 && !this.operation(SlytherArtifactKind.EVALUATE) && this.rules.length === 0) {
             throw new Error(
-                `Kind "${this.name}" defines ${unverified.join(" and ")} but no evaluate operation to verify ${unverified.length > 1 ? "them" : "it"} with.`,
+                `Kind "${this.name}" defines ${unverified.join(" and ")} but no rules and no evaluate operation to verify ${unverified.length > 1 ? "them" : "it"} with.`,
             );
         }
 
         const locate = this.operation("locate");
 
-        if (this.operations.length > 0 && !locate && !this.composite) {
-            throw new Error(`Kind "${this.name}" defines operations but no locate operation to find its artifacts with.`);
+        if ((this.operations.length > 0 || this.rules.length > 0) && !locate && !this.composite) {
+            throw new Error(`Kind "${this.name}" defines ${this.operations.length > 0 ? "operations" : "rules"} but no locate operation to find its artifacts with.`);
         }
 
         if (locate && !locate.deterministic) {
@@ -301,6 +538,10 @@ export class SlytherArtifactKind {
             throw new Error(
                 `Kind "${this.name}" is composite, since it defines expand, so it cannot define "${SlytherArtifactKind.shortOf(other.artifact.name)}": an instance of it has no code of its own.`,
             );
+        }
+
+        if (this.rules.length > 0) {
+            throw new Error(`Kind "${this.name}" is composite, since it defines expand, so it cannot have rules: an instance of it has no code of its own to check.`);
         }
     }
 
@@ -431,6 +672,7 @@ export class SlytherArtifactKind {
 
         const references = [
             ...this.artifact.references,
+            ...this.rules.flatMap((rule) => rule.artifact.references),
             ...this.operations.flatMap((operation) => [...operation.artifact.references, ...operation.steps.flatMap((step) => step.artifact.references)]),
         ];
 
@@ -678,8 +920,8 @@ export class SlytherArtifactKind {
         if (unknown) {
             throw new Error(
                 allowed.length === 0
-                    ? `"${artifact.name}" cannot be qualified: only a kind may be, as demanded, and an operation, as deterministic.`
-                    : `Unknown qualifier "${unknown}" of "${artifact.name}": the only qualifier of ${allowed.includes(SlytherArtifactKind.DEMANDED) ? "a kind is demanded" : "an operation is deterministic"}.`,
+                    ? `"${artifact.name}" cannot be qualified: only a kind may be, as demanded, an operation, as deterministic, and a rule, as deterministic or negative.`
+                    : `Unknown qualifier "${unknown}" of "${artifact.name}": the only qualifier${allowed.includes(SlytherArtifactKind.NEGATIVE) ? "s of a rule are deterministic and negative" : ` of ${allowed.includes(SlytherArtifactKind.DEMANDED) ? "a kind is demanded" : "an operation is deterministic"}`}.`,
             );
         }
     }

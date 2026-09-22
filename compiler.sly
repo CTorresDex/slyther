@@ -77,8 +77,52 @@ class SlytherArtifactKind {
       its closure hash, its scope hash, its params, whether it is deterministic, whether it is built in,
       the role it declares with by, if any, the role that runs its markdown when it is not deterministic,
       and its steps, and each step with its #{SlytherArtifact}, its closure hash, its role and, when it is
-      deterministic, its lang. A step is of kind llm or deterministic
+      deterministic, its lang. A step is of kind llm or deterministic, and a step that checks a rule
+      names the rule, the artifact that owns it and the negatives that break it, see below
+    - rules: Every rule an instance of the kind must follow, in the order they are declared and adopted,
+      each with its #{SlytherArtifact}, its closure hash, whether it is deterministic, its lang when it
+      is, the kind or the trait that owns it, if any, and the negatives that reference it
+    - traits: Every trait the kind adopts, transitively, in the order adopted
+    - assets: Every asset those traits declare, in the order adopted: what the project must hold once
+      the kind is declared, see #{SlytherParser}
+    - guidanceHash: The hash of what the kind says outside its rules: its scope hash and the scope hash
+      of every trait it adopts, and its scope hash alone when it adopts none, so a kind without traits
+      hashes as it did before traits existed
+    - rulesHash: The hash of everything a writer of an instance is shown: the guidance hash, and the
+      closure hash of every rule and of every negative
     - warnings: The warnings found while grouping the kind, in the order found
+
+    The prose of a kind outside its rules is its guidance: what a writer is told and nothing checks. A
+    rule is what must be true of every instance, and each one is checked on its own: a `rule name:
+    deterministic { ... }` block is checked by a script the build writes from it, and a `rule name {
+    ... }` block by a judge, with the text of the rule as the prompt. Either is an artifact of the
+    built-in kind rule named `Kind::name`, so it may be referenced as `#{Kind::name}` wherever a
+    reference goes, and so its hash is its own: editing one rule rebuilds one check. A rule takes no
+    params, and its configuration is lang, for a deterministic one, and by, as a step takes them.
+
+    A rule qualified as negative is a counterexample: code that breaks a rule, written so the check of
+    that rule can be tested against it. It must reference, with `#{}`, at least one rule that is not a
+    negative, the rule or rules it breaks, and it must hold that code in a fenced block, or take it
+    from a file, otherwise it must throw an error, and it may not be deterministic. It is never checked against an instance: the build runs the check of every
+    deterministic rule it references against it and refuses a check that accepts it, see
+    #{Build::SlytherArtifactBuilder}, and a writer is shown it as what never to write.
+
+    A `@trait Name { ... }` block declares a trait, see #{SlytherParser}: prose, rules and assets that
+    several kinds share. An asset declared anywhere but a trait or outside any block must throw an error. A kind, or a trait, adopts a trait or a single rule with a bodiless `rule #{Name}`
+    line: a trait adopted brings every rule it declares and adopts, in order, and its prose comes along
+    as guidance; a rule adopted is that one rule. What is adopted must be a trait or a rule that is
+    neither a negative nor itself an adoption, a trait may not adopt itself, however many adoptions
+    away, and each of these must throw an error. A rule may also be declared outside any kind or trait,
+    to be adopted from wherever it is visible. The rules of a kind are its own, in the order written,
+    with every adoption expanded in place.
+
+    A kind with rules has an evaluate operation whether or not it declares one: the check of every rule
+    is a step of it, in the order of the rules, before whatever steps it declares, each named after the
+    rule with the `::` of its name written as a dot, so a rule adopted from a trait never collides with
+    one of the kind. A deterministic rule is a deterministic step and any other an llm step, so an
+    evaluate declared deterministic that gains an llm rule is deterministic no more, without a word:
+    the qualifier says what its own steps are. A composite kind may not have rules, and a kind with
+    rules that is not composite must declare locate, as a kind with operations must.
 
     The params of every operation are declared once, by the kind, since what an operation is run with is
     the instance it is run on and never something of its own: the first args of the kind are its params,
@@ -134,8 +178,9 @@ class SlytherArtifactKind {
     A kind is built into a folder named after it, with the `::` of its namespace written as a dot, since
     a colon is not a name every file system reads.
 
-    The qualifiers are deterministic, which only an operation may have, and demanded, which only a kind
-    may have: any other qualifier, or one written on anything else, must throw an error. A deterministic
+    The qualifiers are deterministic, which an operation or a rule may have, negative, which only a
+    rule may have, and demanded, which only a kind may have: any other qualifier, or one written on
+    anything else, must throw an error. A deterministic
     operation runs as a plain script and
     never with an llm, so it must throw an error when it contains an llm step, and when it has no steps its
     content is its only step, a deterministic step named after the operation. Likewise, an operation that
@@ -146,10 +191,11 @@ class SlytherArtifactKind {
 
     Its static `of` groups the artifacts of a #{ParsedSlytherScript} into kinds and must throw an
     error when an operation is not declared inside a kind, when a step is not declared inside an
-    operation, when an operation that is not deterministic has neither steps nor content, or when a kind has a create
-    or update operation but no evaluate operation to verify them with, or when a kind that is not
-    composite has operations but no locate operation, or its locate operation is not deterministic or
-    does not take the id first. A kind with no operations is allowed: it is declared but not yet defined.
+    operation, when a rule is declared inside anything but a kind or a trait, when an operation that is
+    not deterministic has neither steps nor content, or when a kind has a create
+    or update operation but neither rules nor an evaluate operation to verify them with, or when a kind that is not
+    composite has operations or rules but no locate operation, or its locate operation is not deterministic or
+    does not take the id first. A kind with no operations and no rules is allowed: it is declared but not yet defined.
 
     A kind qualified as demanded has instances nobody declares: one exists because the uses of another
     artifact named it, and what is asked of it is the whole of its spec, see
@@ -332,7 +378,28 @@ class SlytherParser {
     An `@artifact Name (params) (config) { rules }` line declares a kind, as an artifact of the built-in
     kind artifact, and is the only way to make it available: a declaration of a kind that was not declared
     before it must throw an error, and so must writing a kind as a plain `artifact Name` declaration. The
-    braces are optional, and the built-in kinds are namespace, operation, llm and deterministic.
+    braces are optional, and the built-in kinds are namespace, operation, llm, deterministic, rule and
+    trait.
+
+    A `@trait Name { ... }` line declares a trait, as an artifact of the built-in kind trait, in the
+    namespace it is written in: prose and rule blocks that kinds adopt, see #{SlytherArtifactKind}. It
+    takes no args, and writing it as a plain `trait Name` declaration must throw an error, as a kind
+    written without its directive does.
+
+    An `asset name ref "path" to "path"` line declares an asset, as an artifact of the built-in kind
+    asset: a file or a folder copied into the project as it is, from what its ref points at, which is
+    hashed as any ref is, to where its to says, a path relative to the folder the code lives in. It
+    takes what it copies with ref alone, never from, which embeds text and refuses a folder, nor a
+    body, and it must say where it lands, so each of these must throw an error; where it lands is
+    kept as its arg `to`, so its hash covers it. Nothing but an asset may write to. It is declared
+    outside any block, or inside a trait, and it is checked by Slyther itself, see
+    #{Check::SlytherInstanceChecker}.
+
+    A `rule #{Name}` line inside a kind or a trait adopts what it names, see #{SlytherArtifactKind}. It
+    is read as a rule named after the last word of the name, `Kind::Name`, qualified as adopts, whose
+    prose is the reference alone, resolved from the scope that holds the kind, never from the kind
+    itself, so a kind that adopts `Errors` never finds its own placeholder. Written anywhere else, it
+    must throw an error saying where a rule is adopted.
 
     A kind is declared in the namespace it is written in, as anything else is, and the kind a declaration
     opens with is looked up the way a reference is: in that namespace, then in each enclosing one, then
@@ -351,8 +418,8 @@ class SlytherParser {
     operation must throw an error.
 
     A body may nest blocks, and a nested block is sugar for a `Parent::child` name: an artifact may
-    contain operation blocks, an operation may contain llm and deterministic blocks, and no other
-    kind contains anything. The nested block's text is left out of its parent's content, and its
+    contain operation and rule blocks, a trait may contain rule blocks, an operation may contain llm
+    and deterministic blocks, and no other kind contains anything. The nested block's text is left out of its parent's content, and its
     scope is its parent, so a reference inside it resolves in the parent first, then in each
     enclosing scope, then globally. A block may open and close on one line, as `llm input { ... }`.
 

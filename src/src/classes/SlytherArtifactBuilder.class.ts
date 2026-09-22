@@ -9,6 +9,7 @@ import { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
 import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import { SlytherExpansion } from "./SlytherExpansion.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
+import { SlytherInstanceChecker } from "./SlytherInstanceChecker.class.ts";
 import type { SlytherRunScript } from "./SlytherRunScript.class.ts";
 import { SlytherRole } from "./SlytherRole.class.ts";
 import { SlytherRuntime } from "./SlytherRuntime.class.ts";
@@ -16,6 +17,10 @@ import { SlytherVerifier } from "./SlytherVerifier.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
 
 export class SlytherArtifactBuilder {
+    /** The folder, inside the artifacts folder, where a negative is written while the check of its rule is run against it. */
+    private static readonly NEGATIVES = ".negatives";
+    /** A fenced block of code inside the prose of a negative, which is the code it holds, with the lang the fence names and, after it, the name of the file it is. */
+    private static readonly FENCED = /```([\w-]*)(?:[ \t]+(\S+))?[ \t]*\n([\s\S]*?)```/;
     /** How many times a script that fails verification is sent back to be fixed before the build fails. */
     static readonly ATTEMPTS = 3;
     /** The name of the markdown that orchestrates an operation that is not deterministic. */
@@ -24,6 +29,8 @@ export class SlytherArtifactBuilder {
     private static readonly FIRST = ["locate", "list", "signature", "uses"];
     /** The first operations that describe an artifact, built side by side: neither needs the other, so neither is offered the other. */
     private static readonly PEERS = ["signature", "uses"];
+    /** The operations that read an instance rather than write or judge it, which are never shown its rules: what they find is not what must be true of it. */
+    private static readonly READS = ["locate", "list", "signature", "uses", SlytherArtifactKind.EXPAND];
     /** How many scripts are written by the llm at once, when nothing asks for another number. */
     static readonly CONCURRENCY = 4;
     /** The folder the scripts that run the project are built into, a name no kind can take. */
@@ -37,6 +44,8 @@ export class SlytherArtifactBuilder {
     private saving: Promise<void> = Promise.resolve();
     /** The last install or verification, which run one at a time, since an install changes what every script runs with. */
     private locked: Promise<void> = Promise.resolve();
+    /** What every script under way is doing and since when, so what is waited on names them all, not the last one to speak. */
+    private working = new Map<string, { doing: string; since: number }>();
 
     constructor(
         /** The folder the code of the project lives in, where every script runs. */
@@ -46,9 +55,15 @@ export class SlytherArtifactBuilder {
         private readonly generator: SlytherGenerator,
         /**
          * attempts: how many times a script may be fixed; concurrency: how many scripts the llm writes at once;
-         * log: prints a finished line; say: names what is being waited on.
+         * log: prints a finished line; say: names what is being waited on, as a label or as what gives it
+         * each time it is drawn, so how long each wait has lasted stays current.
          */
-        private readonly options: { attempts?: number; concurrency?: number; log?: (line: string) => void; say?: (label: string) => void } = {},
+        private readonly options: {
+            attempts?: number;
+            concurrency?: number;
+            log?: (line: string) => void;
+            say?: (label: string | (() => string)) => void;
+        } = {},
     ) {}
 
     /**
@@ -75,6 +90,7 @@ export class SlytherArtifactBuilder {
         this.roles = parsed.roles;
         this.saving = Promise.resolve();
         this.locked = Promise.resolve();
+        this.working = new Map();
 
         const desired = [...this.desiredOf(kinds, parsed), ...this.desiredOfScripts(kinds, scripts)];
         const report: { path: string; status: "built" | "rebuilt" | "kept" | "removed" }[] = [];
@@ -151,9 +167,10 @@ export class SlytherArtifactBuilder {
                         }
 
                         started = Date.now();
-                        this.options.say?.(`${entry.path}: writing`);
+                        this.doing(entry.path, "writing");
                         fixes = await this.buildScript(entry);
                     } finally {
+                        this.done(entry.path);
                         slots.release();
                     }
                 } else {
@@ -225,6 +242,28 @@ export class SlytherArtifactBuilder {
         return this.saving;
     }
 
+    /** Records what the script at the path is doing now, and says what every script under way is doing. */
+    private doing(path: string, doing: string): void {
+        this.working.set(path, { doing, since: Date.now() });
+        this.options.say?.(() => this.workingLabel());
+    }
+
+    /** Forgets the script at the path, which is no longer under way. */
+    private done(path: string): void {
+        this.working.delete(path);
+        this.options.say?.(() => this.workingLabel());
+    }
+
+    /** Every script under way, longest waiting first, each with what it is doing and for how long. */
+    private workingLabel(): string {
+        const now = Date.now();
+        const all = [...this.working]
+            .sort(([, a], [, b]) => a.since - b.since)
+            .map(([path, work]) => `${path}: ${work.doing} (${StringUtils.duration(now - work.since)})`);
+
+        return all.length === 0 ? "building the artifacts" : all.length === 1 ? all[0]! : `${all.length} under way · ${all.join(" · ")}`;
+    }
+
     /** Runs the work once everything asked to run exclusively before it is done, whether it passed or not. */
     private exclusively<T>(work: () => Promise<T>): Promise<T> {
         const result = this.locked.then(work);
@@ -288,9 +327,25 @@ export class SlytherArtifactBuilder {
                     const runtime = step.lang ? SlytherRuntime.of(step.lang, this.artifacts) : undefined;
                     const path = join(folder, `${stepName}.${runtime?.extension ?? "md"}`);
                     const run = runtime?.run(join(this.artifacts, path));
-                    const inputHash = SlytherArtifactBuilder.hash(step.closureHash, operation.scopeHash, kind.scopeHash, step.lang ?? "llm", this.artifacts, path);
+                    const inputHash = step.rule
+                        ? SlytherArtifactBuilder.hash(
+                              step.closureHash,
+                              ...step.rule.negatives.map((negative) => negative.closureHash),
+                              step.rule.owner?.scopeHash ?? "",
+                              step.lang ?? "llm",
+                              this.artifacts,
+                              path,
+                          )
+                        : SlytherArtifactBuilder.hash(
+                              step.closureHash,
+                              operation.scopeHash,
+                              runtime && (SlytherArtifactBuilder.READS.includes(name) || SlytherArtifactBuilder.rulesReferencedBy(kind, operation, step).length > 0) ? kind.guidanceHash : kind.rulesHash,
+                              step.lang ?? "llm",
+                              this.artifacts,
+                              path,
+                          );
 
-                    record.steps.push({ name: stepName, kind: runtime ? "deterministic" : "llm", path, lang: step.lang, run, role: step.role });
+                    record.steps.push({ name: stepName, kind: runtime ? "deterministic" : "llm", path, lang: step.lang, run, role: step.role, ...(step.rule ? { rule: step.rule.artifact.name } : {}) });
                     entries.push({
                         path,
                         inputHash,
@@ -300,9 +355,16 @@ export class SlytherArtifactBuilder {
                             ? {
                                   runtime,
                                   cast: SlytherRole.cast(step.role ?? SlytherRole.WRITERS[0]!, this.roles),
-                                  instructions: () => this.instructionsOf(kinds, kind, operation, step, stepName, path, runtime, record),
-                                  context: this.contextOf(kinds, kind, operation, step),
-                                  verify: () =>
+                                  instructions: () =>
+                                      step.rule
+                                          ? this.ruleInstructionsOf(kind, step.rule, path, runtime)
+                                          : this.instructionsOf(kinds, kind, operation, step, stepName, path, runtime, record),
+                                  context: this.contextOf(parsed, kinds, kind, operation, step),
+                                  verify: step.rule
+                                      ? async () =>
+                                            (await new SlytherVerifier(this.cwd).verify({ operation: name, script: join(this.artifacts, path), runtime })) ??
+                                            this.reject(step.rule!, path, runtime)
+                                      : () =>
                                       new SlytherVerifier(this.cwd).verify({
                                           operation: name,
                                           script: join(this.artifacts, path),
@@ -321,7 +383,7 @@ export class SlytherArtifactBuilder {
                                       }),
                               }
                             : undefined,
-                        content: runtime ? undefined : this.promptOf(kind, operation, step),
+                        content: runtime ? undefined : step.rule ? this.rulePromptOf(kind, step.rule, step.artifact.name) : this.promptOf(kind, operation, step),
                     });
                 }
 
@@ -331,7 +393,7 @@ export class SlytherArtifactBuilder {
                     record.entry = path;
                     entries.push({
                         path,
-                        inputHash: SlytherArtifactBuilder.hash(operation.closureHash, kind.scopeHash, this.artifacts, path),
+                        inputHash: SlytherArtifactBuilder.hash(operation.closureHash, kind.rulesHash, ...record.steps.map((step) => `${step.kind} ${step.path}`), this.artifacts, path),
                         owner: { operation: `${kind.name}::${name}`, record },
                         content: this.entryOf(kind, operation, record),
                     });
@@ -377,7 +439,7 @@ export class SlytherArtifactBuilder {
 
                             const reviewer = SlytherRole.cast(SlytherRole.standardOf("judge"), this.roles);
 
-                            this.options.say?.(`${path}: asking the ${SlytherRole.labelOf(reviewer)} to review it`);
+                            this.doing(path, `asking the ${SlytherRole.labelOf(reviewer)} to review it`);
 
                             const review = await this.generator.review(instructions, [{ path, content }], reviewer);
 
@@ -421,7 +483,7 @@ export class SlytherArtifactBuilder {
 
         const as = SlytherRole.labelOf(script.cast);
 
-        this.options.say?.(`${entry.path}: asking the ${as} (attempt 1 of ${attempts})`);
+        this.doing(entry.path, `asking the ${as} (attempt 1 of ${attempts})`);
 
         let reply = await this.generator.generate({
             instructions: script.instructions(),
@@ -436,9 +498,11 @@ export class SlytherArtifactBuilder {
 
             await this.write(entry.path, file.content, entry.inputHash, reply.dependencies, SlytherRole.fingerprintOf(script.cast));
 
+            this.doing(entry.path, "waiting for its turn to verify");
+
             const failure = await this.exclusively(async () => {
-                await this.install(script.runtime);
-                this.options.say?.(`${entry.path}: verifying`);
+                await this.install(script.runtime, entry.path);
+                this.doing(entry.path, "verifying");
 
                 return script.verify(file.content);
             });
@@ -454,7 +518,7 @@ export class SlytherArtifactBuilder {
             }
 
             this.options.log?.(`${entry.path}: attempt ${attempt} failed verification:\n${failure.trim().split("\n").map((line) => `    ${line}`).join("\n")}`);
-            this.options.say?.(`${entry.path}: asking the ${as} to fix it (attempt ${attempt + 1} of ${attempts})`);
+            this.doing(entry.path, `asking the ${as} to fix it (attempt ${attempt + 1} of ${attempts})`);
             reply = await this.generator.fix(reply.session, failure, [entry.path], script.cast);
         }
     }
@@ -517,7 +581,8 @@ export class SlytherArtifactBuilder {
     }
 
     /** Writes the dependencies file of the lang when its union changed, and installs it. */
-    private async install(runtime: SlytherRuntime): Promise<void> {
+    /** Installs the dependencies the scripts of the runtime ask for, when they changed, on behalf of the script at the path. */
+    private async install(runtime: SlytherRuntime, path: string): Promise<void> {
         const content = runtime.dependencies(this.manifest.dependenciesOf(runtime.lang));
         const command = runtime.install();
 
@@ -534,7 +599,7 @@ export class SlytherArtifactBuilder {
 
         const started = Date.now();
 
-        this.options.say?.(`installing the ${runtime.lang} dependencies (${command.join(" ")})`);
+        this.doing(path, `installing the ${runtime.lang} dependencies (${command.join(" ")})`);
 
         const result = await ProcessUtils.run(command, { cwd: this.cwd });
 
@@ -614,7 +679,7 @@ export class SlytherArtifactBuilder {
             "",
             `## Rules of every ${kind.name}`,
             "",
-            kind.artifact.textIn(this.cwd),
+            this.rulesShownTo(kind, operation, step),
             "",
             `## Operation ${record.name}${SlytherArtifactBuilder.signatureOf(operation.params)}`,
             "",
@@ -636,6 +701,140 @@ export class SlytherArtifactBuilder {
                 : []),
             ...(record.name === SlytherArtifactKind.EXPAND ? ["", ...SlytherArtifactBuilder.emitsOf(kinds, kind, this.cwd)] : []),
         ].join("\n");
+    }
+
+    /** The rules of the kind the step or its operation reference, by name, which is what a script is shown instead of every rule. */
+    private static rulesReferencedBy(
+        kind: SlytherArtifactKind,
+        operation: SlytherArtifactKind["operations"][number],
+        step: SlytherArtifactKind["operations"][number]["steps"][number],
+    ): SlytherArtifactKind["rules"] {
+        const references = new Set([...operation.artifact.references, ...step.artifact.references]);
+
+        return kind.rules.filter((rule) => references.has(`rule:${rule.artifact.name}`));
+    }
+
+    /**
+     * What a script is shown of the rules of its kind: the guidance, and the rules it or its operation
+     * reference, so editing another rule never rewrites it, or every rule when they reference none. A
+     * script of an operation that reads an instance is shown the guidance alone: what it finds is not
+     * what must be true of it.
+     */
+    private rulesShownTo(
+        kind: SlytherArtifactKind,
+        operation: SlytherArtifactKind["operations"][number],
+        step: SlytherArtifactKind["operations"][number]["steps"][number],
+    ): string {
+        const referenced = SlytherArtifactBuilder.rulesReferencedBy(kind, operation, step);
+
+        if (SlytherArtifactBuilder.READS.includes(SlytherArtifactBuilder.shortOf(operation.artifact.name))) {
+            return kind.artifact.textIn(this.cwd);
+        }
+
+        if (referenced.length === 0) {
+            return kind.rulesOf(this.cwd);
+        }
+
+        return [
+            kind.artifact.textIn(this.cwd),
+            ...referenced.flatMap((rule) => ["", `### Rule ${rule.artifact.name}`, "", rule.artifact.textIn(this.cwd)]),
+        ]
+            .join("\n")
+            .trim();
+    }
+
+    /** What the generator is told to write the check of a rule: the rule, whoever owns it, and what it must reject. */
+    private ruleInstructionsOf(kind: SlytherArtifactKind, rule: SlytherArtifactKind["rules"][number], path: string, runtime: SlytherRuntime): string {
+        const owner = rule.owner?.artifact;
+
+        return [
+            `Write the script \`${path}\` in ${runtime.lang}: the check of the rule "${rule.artifact.name}" for every artifact of the kind "${kind.name}".`,
+            "",
+            ...(owner ? [`## ${owner.artifact === "artifact" ? `Every ${owner.name}` : `The trait ${owner.name}`}`, "", owner.textIn(this.cwd) || "(no further description)", ""] : []),
+            `## Rule ${rule.artifact.name}`,
+            "",
+            rule.artifact.textIn(this.cwd),
+            "",
+            ...SlytherArtifactBuilder.section(SlytherArtifactBuilder.negativesOf(rule, this.cwd)),
+            "## Conventions",
+            "",
+            `- The script is run as \`${runtime.run(join(this.artifacts, path)).join(" ")} <segment>...\`: it receives every segment of the ${kind.name} to check as positional arguments, each a path, for a whole file or folder, \`path:start-end\`, for the lines of a file from start to end, both inclusive and starting at 1, or \`path:line\`, for one line.`,
+            "- It judges only what the segments hold: the rest of a file whose lines it is handed is context it may read, never what it checks, and it never looks for other files of the artifact on its own.",
+            "- Several segments may point into one file. When the rule speaks of that file as a whole, of what it imports, exports or defines, the file is read once, whole, and judged once, never one segment at a time, since the segments only say which lines of it belong to the artifact.",
+            `- The segments are every part of the ${kind.name}, and a rule usually speaks of some of them: it checks the segments the rule names, by their path or their name, and passes over the others without a word. A segment it is handed is never wrong for being there.`,
+            "- A negative is a single file handed on its own, named as the rule names it, so what the rule says of that file is checked on it.",
+            `- The args of the ${kind.name} are in its environment, one variable per param: ${["id", ...kind.params.map((param) => param.name)].map((name) => `\`${SlytherInstanceChecker.ENV}${name.toUpperCase().replace(/-/g, "_")}\``).join(", ")}${kind.params.length > 0 ? ", the value of each as the instance declares it, empty when it declares none" : ""}. They may all be absent, as when it is run against a sample, and then it judges what it can from the segments alone, never failing for an arg it was not given.`,
+            "- It runs from the folder the code of the project lives in, so every path it reads is relative to that folder.",
+            "- It exits 0 when every segment complies with the rule, and otherwise prints one line per discrepancy on stdout, each saying what is wrong and where, and exits 1. It never asks for input.",
+            `- It is a single, self-contained file${runtime.lang === "ts" ? " run by bun, so it may use the Bun and node APIs" : ""}, importing only the dependencies it declares.`,
+            "- It checks the rule as written and no more: what the rule does not say is not a discrepancy.",
+        ].join("\n");
+    }
+
+    /** The markdown of the check of an llm rule: the rule, whoever owns it, what breaks it, and to judge that rule alone. */
+    private rulePromptOf(kind: SlytherArtifactKind, rule: SlytherArtifactKind["rules"][number], name: string): string {
+        const owner = rule.owner?.artifact;
+
+        return [
+            `# ${name}`,
+            "",
+            `Judge whether the ${kind.name} below complies with the rule "${rule.artifact.name}", and with that rule alone: what it does not say is not a discrepancy. Its code is every segment of the ${kind.name}, and the rule usually speaks of some of them: judge the ones it names and pass over the others.`,
+            "",
+            ...(owner ? [`## ${owner.artifact === "artifact" ? `Every ${owner.name}` : `The trait ${owner.name}`}`, "", owner.prose || "(no further description)", ""] : []),
+            `## Rule ${rule.artifact.name}`,
+            "",
+            rule.artifact.prose,
+            "",
+            ...SlytherArtifactBuilder.section(SlytherArtifactBuilder.negativesOf(rule)),
+        ].join("\n");
+    }
+
+    /** The negatives of a rule as instructions: each is code that breaks the rule, so the check must reject it. */
+    private static negativesOf(rule: SlytherArtifactKind["rules"][number], cwd?: string): string[] {
+        if (rule.negatives.length === 0) {
+            return [];
+        }
+
+        return [
+            "## What breaks it",
+            "",
+            "Each of these breaks the rule, so it must be found wanting:",
+            ...rule.negatives.flatMap((negative) => ["", `### ${negative.artifact.name}`, "", cwd === undefined ? negative.artifact.prose : negative.artifact.textIn(cwd)]),
+        ];
+    }
+
+    /**
+     * Why the check of a rule accepts a negative, or null when it rejects every one: each is written to
+     * a file of its own, the check is run with that file as the only segment, and must exit with a code
+     * other than 0. The file holds the fenced code of the negative, named as its fence names it after
+     * the lang, else with the extension the lang gives, or its whole prose when it holds no fence.
+     */
+    private async reject(rule: SlytherArtifactKind["rules"][number], path: string, runtime: SlytherRuntime): Promise<string | null> {
+        const folder = join(this.artifacts, SlytherArtifactBuilder.NEGATIVES);
+
+        try {
+            for (const [index, negative] of rule.negatives.entries()) {
+                const prose = negative.artifact.textIn(this.cwd);
+                const fenced = SlytherArtifactBuilder.FENCED.exec(prose);
+                const sample = fenced ? fenced[3]! : prose;
+                const own = `${SlytherArtifactKind.folderOf(negative.artifact.name)}-${index}`;
+                // A fence may name the file the negative is, so a check that looks for that name finds it.
+                const file = fenced?.[2] ? join(folder, own, fenced[2]) : join(folder, `${own}.${fenced?.[1] || "txt"}`);
+
+                await mkdir(dirname(join(this.cwd, file)), { recursive: true });
+                await writeFile(join(this.cwd, file), sample);
+
+                const result = await ProcessUtils.run([...runtime.run(join(this.artifacts, path)), file], { cwd: this.cwd, timeout: SlytherVerifier.TIMEOUT });
+
+                if (result.code === 0) {
+                    return `${join(this.artifacts, path)} accepts "${negative.artifact.name}", which breaks the rule "${rule.artifact.name}": it must exit 1 for a file holding:\n${sample}`;
+                }
+            }
+
+            return null;
+        } finally {
+            await rm(join(this.cwd, folder), { recursive: true, force: true });
+        }
     }
 
     /**
@@ -670,7 +869,7 @@ export class SlytherArtifactBuilder {
                     "",
                     `### ${emitted.name}${needed.length > 0 ? `, which takes ${needed.map((param) => `${param.name} (${param.type}${param.optional ? ", optional" : ""})`).join(", ")}` : ", which takes no args"}`,
                     "",
-                    emitted.artifact.textIn(cwd) || "(no rules)",
+                    emitted.rulesOf(cwd) || "(no rules)",
                 ];
             }),
         ];
@@ -712,8 +911,13 @@ export class SlytherArtifactBuilder {
         ].join("\n");
     }
 
-    /** The prose the step, its operation and its kind reference, for the generator to read. */
+    /**
+     * The prose the step, its operation and its kind reference, for the generator to read: the rules of
+     * a kind, the prose of a rule or a trait, which the check of a rule references as any other, and
+     * what an asset copies, so a rule held to the shape of an asset is written against it.
+     */
     private contextOf(
+        parsed: ParsedSlytherScript,
         kinds: SlytherArtifactKind[],
         kind: SlytherArtifactKind,
         operation: SlytherArtifactKind["operations"][number],
@@ -723,11 +927,21 @@ export class SlytherArtifactBuilder {
         const context: { path: string; content: string }[] = [];
 
         for (const reference of references) {
-            const [, name] = reference.split(":") as [string, string];
-            const referenced = kinds.find((candidate) => candidate.name === name)?.artifact;
+            const boundary = reference.indexOf(":");
+            const [artifact, name] = [reference.slice(0, boundary), reference.slice(boundary + 1)];
 
-            if (referenced && referenced.name !== kind.name) {
-                context.push({ path: reference, content: referenced.textIn(this.cwd) });
+            if (artifact === "artifact") {
+                const referenced = kinds.find((candidate) => candidate.name === name);
+
+                if (referenced && referenced.name !== kind.name) {
+                    context.push({ path: reference, content: referenced.rulesOf(this.cwd) });
+                }
+            } else if (artifact === "rule" || artifact === "trait" || artifact === "asset") {
+                const referenced = parsed.artifacts.find((candidate) => candidate.artifact === artifact && candidate.name === name);
+
+                if (referenced && referenced.name !== step.rule?.artifact.name) {
+                    context.push({ path: reference, content: referenced.textIn(this.cwd) });
+                }
             }
         }
 
@@ -748,7 +962,7 @@ export class SlytherArtifactBuilder {
             ...SlytherArtifactBuilder.section(SlytherArtifactBuilder.demandsOf(kind, operation.params)),
             `## Rules of every ${kind.name}`,
             "",
-            kind.rules,
+            kind.rulesOf(),
             "",
             "## Step",
             "",
@@ -780,7 +994,7 @@ export class SlytherArtifactBuilder {
             ...(operation.artifact.prose ? [operation.artifact.prose, ""] : []),
             `## Rules of every ${kind.name}`,
             "",
-            kind.rules,
+            kind.rulesOf(),
             "",
             "## Steps",
             "",

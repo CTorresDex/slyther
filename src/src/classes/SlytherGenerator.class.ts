@@ -145,31 +145,54 @@ export abstract class SlytherGenerator {
         return { pass: reply.result.pass === true, errors: reply.result.errors ?? [] };
     }
 
+    /**
+     * Asks for the files and returns them, resuming the session once, with what was wrong, when the reply
+     * lacks a file or adds one: a single stray reply never fails a build its writer could still finish.
+     * Throws when the second reply is wrong too.
+     */
     private async reply(
         prompt: string,
         expected: string[],
         session?: string,
         cast?: SlytherRole["cast"],
     ): Promise<{ files: { path: string; content: string }[]; dependencies: Record<string, string>; session: string }> {
-        const reply = await this.ask<{ files: { path: string; content: string }[]; dependencies: Record<string, string> }>(
+        let reply = await this.ask<{ files: { path: string; content: string }[]; dependencies: Record<string, string> }>(
             prompt,
             SlytherGenerator.SCHEMA,
             session,
             cast,
         );
-        const paths = reply.result.files.map((file) => file.path);
-        const missing = expected.filter((path) => !paths.includes(path));
-        const unexpected = paths.filter((path) => !expected.includes(path));
+        let wrong = SlytherGenerator.wrongFilesOf(reply.result.files ?? [], expected);
 
-        if (missing.length > 0 || unexpected.length > 0) {
-            throw new Error(
-                `The generator replied with the wrong files: ${[
-                    ...missing.map((path) => `"${path}" is missing`),
-                    ...unexpected.map((path) => `"${path}" was not asked for`),
-                ].join(", ")}.`,
+        if (wrong) {
+            reply = await this.ask(
+                [
+                    `Your reply had the wrong files: ${wrong}.`,
+                    "",
+                    `Reply again with exactly these files in \`files\`, each with its full content: ${expected.map((path) => `\`${path}\``).join(", ")}.`,
+                ].join("\n"),
+                SlytherGenerator.SCHEMA,
+                reply.session,
+                cast,
             );
+            wrong = SlytherGenerator.wrongFilesOf(reply.result.files ?? [], expected);
+        }
+
+        if (wrong) {
+            throw new Error(`The generator replied with the wrong files: ${wrong}.`);
         }
 
         return { files: reply.result.files, dependencies: reply.result.dependencies ?? {}, session: reply.session };
+    }
+
+    /** What is missing from the files and what was not asked for, or null when they are exactly what was expected. */
+    private static wrongFilesOf(files: { path: string }[], expected: string[]): string | null {
+        const paths = files.map((file) => file.path);
+        const problems = [
+            ...expected.filter((path) => !paths.includes(path)).map((path) => `"${path}" is missing`),
+            ...paths.filter((path) => !expected.includes(path)).map((path) => `"${path}" was not asked for`),
+        ];
+
+        return problems.length > 0 ? problems.join(", ") : null;
     }
 }

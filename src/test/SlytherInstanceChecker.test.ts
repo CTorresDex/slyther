@@ -345,8 +345,8 @@ describe("SlytherInstanceChecker brings what changed in line", () => {
         await writeFile(join(root, "main.sly"), SPEC("operation evaluate (id): deterministic {\n deterministic check { fails on BAD }\n deterministic strict { fails on a plain b }\n }"));
 
         expect(statuses(await compile(new FakeGenerator(strict)))).toEqual([
-            "k:A pass (what evaluates it changed)",
-            "k:B fixed (what evaluates it changed)",
+            "k:A pass (what evaluates it changed: strict)",
+            "k:B fixed (what evaluates it changed: strict)",
         ]);
         expect(await read("A.txt")).toBe("a\n");
         expect(await read("B.txt")).toBe("b\nupdated\n");
@@ -420,7 +420,7 @@ describe("SlytherInstanceChecker brings what changed in line", () => {
 
         const read2 = JSON.parse(await readFile(path, "utf-8"));
 
-        expect(read2.version).toBe(3);
+        expect(read2.version).toBe(4);
         expect(read2.instances["k:A"].rulesHash).toMatch(/^[0-9a-f]{64}$/);
 
         await writeFile(join(root, "main.sly"), SPEC().replace("rules of k", "the stricter rules of k"));
@@ -861,7 +861,7 @@ describe("SlytherInstanceChecker roles", () => {
 
         const generator = new CastingGenerator(SCRIPTS);
 
-        expect(statuses(await compile(generator))).toEqual(["k:A pass (what evaluates it changed)", "k:B pass (what evaluates it changed)"]);
+        expect(statuses(await compile(generator))).toEqual(["k:A pass (what evaluates it changed: verify)", "k:B pass (what evaluates it changed: verify)"]);
         expect(generator.casts).toContain("judged by reviewer=reviewer@claude-cli(model=j2)");
     });
 
@@ -912,7 +912,7 @@ describe("SlytherInstanceChecker roles", () => {
         const moved = await build("m6");
 
         expect(moved.lines).toContain('reviewer: "newest" now resolves to m6, no longer m5, so what it judged is evaluated again');
-        expect(moved.statuses).toEqual(["k:A pass (what evaluates it changed)", "k:B pass (what evaluates it changed)"]);
+        expect(moved.statuses).toEqual(["k:A pass (what evaluates it changed: verify)", "k:B pass (what evaluates it changed: verify)"]);
     });
 
     test("a project whose roles nobody plays is refused before anything is built or asked", async () => {

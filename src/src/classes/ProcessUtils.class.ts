@@ -8,7 +8,8 @@ export class ProcessUtils {
     private static readonly GRACE = 1_000;
 
     /**
-     * Runs the command and waits for it to exit. A command that cannot be spawned does not throw: it
+     * Runs the command and waits for it to exit, with whatever variables it is given added to the
+     * environment. A command that cannot be spawned does not throw: it
      * exits with 127 and the reason as its stderr, so a caller treats it like any other failure.
      *
      * The command runs in a process group of its own, killed whole once it exits and once it outruns
@@ -18,13 +19,18 @@ export class ProcessUtils {
      */
     static async run(
         command: string[],
-        options: { cwd?: string; stdin?: string; timeout?: number } = {},
+        options: { cwd?: string; stdin?: string; timeout?: number; env?: Record<string, string> } = {},
     ): Promise<{ code: number; stdout: string; stderr: string }> {
         return new Promise((resolve) => {
             let child;
 
             try {
-                child = spawn(command[0]!, command.slice(1), { cwd: options.cwd, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+                child = spawn(command[0]!, command.slice(1), {
+                    cwd: options.cwd,
+                    detached: true,
+                    stdio: ["pipe", "pipe", "pipe"],
+                    ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+                });
             } catch (error) {
                 resolve({ code: 127, stdout: "", stderr: error instanceof Error ? error.message : String(error) });
 

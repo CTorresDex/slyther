@@ -64,7 +64,7 @@ describe("SlytherArtifactKind qualifiers", () => {
     test("throws when a step is qualified", () => {
         expect(() =>
             kinds(`@artifact k {\n ${LOCATE}\n operation evaluate {\n llm check: deterministic { x }\n }\n}`),
-        ).toThrow('"k::evaluate::check" cannot be qualified: only a kind may be, as demanded, and an operation, as deterministic.');
+        ).toThrow('"k::evaluate::check" cannot be qualified: only a kind may be, as demanded, an operation, as deterministic, and a rule, as deterministic or negative.');
     });
 
     test("throws on an unknown qualifier", () => {

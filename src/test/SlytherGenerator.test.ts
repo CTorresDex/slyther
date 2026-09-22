@@ -56,8 +56,17 @@ describe("SlytherGenerator", () => {
         expect(generator.prompts[1]!.prompt).toContain("a does not parse");
     });
 
-    test("throws when the reply lacks a file or adds one", async () => {
-        const generator = new FakeGenerator([{ files: [{ path: "b", content: "" }] }]);
+    test("resumes the session once with what was wrong when the reply lacks a file or adds one", async () => {
+        const generator = new FakeGenerator([{ files: [] }, { files: [{ path: "a", content: "1" }] }]);
+        const reply = await generator.generate({ ...TASK, expected: ["a"] });
+
+        expect(reply.files).toEqual([{ path: "a", content: "1" }]);
+        expect(generator.prompts[1]!.session).toBe("s1");
+        expect(generator.prompts[1]!.prompt).toContain('"a" is missing');
+    });
+
+    test("throws when the reply lacks a file or adds one twice", async () => {
+        const generator = new FakeGenerator([{ files: [{ path: "b", content: "" }] }, { files: [{ path: "b", content: "" }] }]);
 
         expect(generator.generate({ ...TASK, expected: ["a"] })).rejects.toThrow(
             'The generator replied with the wrong files: "a" is missing, "b" was not asked for.',

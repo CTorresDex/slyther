@@ -1,14 +1,16 @@
 // Imports
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { copyFile, cp, mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { dirname, join, sep } from "node:path";
 import { ProcessUtils } from "./ProcessUtils.class.ts";
 import { SlytherArtifact } from "./SlytherArtifact.class.ts";
 import type { SlytherArtifactManifest } from "./SlytherArtifactManifest.class.ts";
 import { SlytherArtifactKind } from "./SlytherArtifactKind.class.ts";
 import { SlytherExpansion } from "./SlytherExpansion.class.ts";
+import { SlytherFolderSource } from "./SlytherFolderSource.class.ts";
 import type { SlytherGenerator } from "./SlytherGenerator.class.ts";
 import { SlytherInstanceManifest } from "./SlytherInstanceManifest.class.ts";
+import { SlytherParser } from "./SlytherParser.class.ts";
 import { SlytherRole } from "./SlytherRole.class.ts";
 import { StringUtils } from "./StringUtils.class.ts";
 import type { ParsedSlytherScript } from "./ParsedSlytherScript.class.ts";
@@ -40,6 +42,10 @@ export class SlytherInstanceChecker {
     private static readonly RULES = "the rules of its kind changed";
     /** The reason of an instance whose evaluate changed, which is evaluated first and only updated when it fails. */
     private static readonly EVALUATOR = "what evaluates it changed";
+    /** How the errors of the check of a rule are named after it. */
+    private static readonly RULE = ": ";
+    /** What the name of every variable the check of a rule finds the args of the instance in starts with. */
+    static readonly ENV = "SLYTHER_";
     /** The reason of an instance with code that has no record yet, which is evaluated before anything touches it. */
     private static readonly NEW = "never evaluated";
 
@@ -52,6 +58,12 @@ export class SlytherInstanceChecker {
     private declared = new Map<string, SlytherArtifact>();
     /** What every instance with code looks like now, keyed by `kind:name`. */
     private states = new Map<string, SlytherInstanceChecker["state"]>();
+    /** Every kind, by name, for the rules an instance is shown of what it references. */
+    private kinds = new Map<string, SlytherArtifactKind>();
+    /** The checks that changed for an instance whose only change is what evaluates it, so only those are run. */
+    private stale = new Map<string, string[]>();
+    /** What every check found for every instance evaluated in this check, keyed by `kind:name`. */
+    private checks = new Map<string, NonNullable<SlytherInstanceManifest["instances"][string]["checks"]>>();
 
     constructor(
         /** The folder the code of the project lives in, where every script runs. */
@@ -82,6 +94,9 @@ export class SlytherInstanceChecker {
         this.manifest = await SlytherInstanceManifest.load(this.path);
         this.roles = parsed.roles;
         this.written = new Map();
+        this.kinds = new Map(kinds.map((kind) => [kind.name, kind]));
+        this.stale = new Map();
+        this.checks = new Map();
 
         const { parsed: expanded, expansions } = await this.expand(parsed, kinds);
 
@@ -91,6 +106,11 @@ export class SlytherInstanceChecker {
         const report: SlytherInstanceChecker["entry"][] = [];
 
         await this.migrate(instances);
+
+        // What the traits adopted bring along is brought in line first, since the code may lean on it.
+        const assets = await this.checkAssets(expanded, kinds);
+
+        report.push(...assets.entries);
 
         for (const [key, expansion] of expansions) {
             const instance = instances.get(key)!;
@@ -127,7 +147,7 @@ export class SlytherInstanceChecker {
         await this.demand(coded, states, kinds);
 
         for (const key of Object.keys(this.manifest.instances)) {
-            if (!instances.has(key) && !coded.has(key)) {
+            if (!instances.has(key) && !coded.has(key) && !assets.keys.has(key)) {
                 report.push(...(await this.forget(key)));
             }
         }
@@ -222,7 +242,7 @@ export class SlytherInstanceChecker {
                         ? { pass: false, errors: [work.operation === "create" ? "the create did not produce it" : "the update removed it"] }
                         : await this.evaluate(instance, key, state);
             } else {
-                verdict = work.broken ? { pass: false, errors: [work.reason] } : await this.evaluate(instance, key, state);
+                verdict = work.broken ? { pass: false, errors: [work.reason] } : await this.evaluate(instance, key, state, this.stale.get(key));
             }
 
             // An instance put off until what it asked for existed is reported as what was done to it, not as merely evaluated.
@@ -279,6 +299,7 @@ export class SlytherInstanceChecker {
                     }),
                 ),
                 evaluatedWith: this.evaluatedWithOf(instance.kind),
+                ...SlytherInstanceChecker.checksRecordOf(this.checks.get(key) ?? this.manifest.instances[key]?.checks),
                 ...SlytherInstanceChecker.writtenByOf(this.written.get(key) ?? this.manifest.instances[key]?.writtenBy),
                 result: verdict.pass ? "pass" : "fail",
                 errors: verdict.errors,
@@ -296,6 +317,110 @@ export class SlytherInstanceChecker {
     }
 
     /**
+     * Brings every asset the project wants in line with its source: one declared outside any trait, or
+     * inside a trait some kind adopts. An asset is a file or folder copied as it is, so Slyther does
+     * the work itself, with no script and no llm: it is missing when nothing is at where it lands, and
+     * created there with compile; it fails when what is there differs from its source, and is copied
+     * again with compile, whether the copy was edited or the source changed; and it passes when the
+     * two hash alike, kept when they did last time as well. Returns what happened to each and their keys.
+     */
+    private async checkAssets(parsed: ParsedSlytherScript, kinds: SlytherArtifactKind[]): Promise<{ entries: SlytherInstanceChecker["entry"][]; keys: Set<string> }> {
+        const adopted = new Set(kinds.flatMap((kind) => kind.assets.map((asset) => asset.name)));
+        const traits = new Set(parsed.artifacts.filter((artifact) => artifact.artifact === "trait").map((artifact) => artifact.name));
+        const wanted = parsed.artifacts.filter((artifact) => {
+            const boundary = artifact.name.lastIndexOf("::");
+
+            return artifact.artifact === SlytherParser.ASSET && (adopted.has(artifact.name) || boundary < 0 || !traits.has(artifact.name.slice(0, boundary)));
+        });
+        const entries: SlytherInstanceChecker["entry"][] = [];
+        const keys = new Set<string>();
+
+        for (const asset of wanted) {
+            const key = `${SlytherParser.ASSET}:${asset.name}`;
+            const source = asset.source!;
+            const to = String(asset.args.find((arg) => arg.name === "to")?.value ?? "");
+            const record = this.manifest.instances[key];
+            const folder = source.path.endsWith(sep);
+            const found = await SlytherInstanceChecker.hashAt(join(this.cwd, to), folder);
+            const copy = async () => {
+                this.options.say?.(`${key}: copying ${source.path} to ${to}`);
+                await SlytherInstanceChecker.copy(join(this.cwd, source.path), join(this.cwd, to), folder);
+            };
+            let status: SlytherInstanceChecker["entry"]["status"];
+            let reason: string | undefined;
+            const errors: string[] = [];
+
+            keys.add(key);
+
+            if (found === undefined) {
+                status = this.options.compile ? "created" : "missing";
+                reason = "missing";
+
+                if (this.options.compile) {
+                    await copy();
+                }
+            } else if (found !== source.hash) {
+                reason = record && record.specHash !== asset.hash ? "its source changed" : "differs from its source";
+
+                if (this.options.compile) {
+                    await copy();
+                    status = "updated";
+                } else {
+                    status = "fail";
+                    errors.push(`${to} differs from ${source.path}, which it is a copy of: ${reason === "its source changed" ? "the source changed, so build copies it again" : "edit the source or drop the asset to make the copy yours"}`);
+                }
+            } else {
+                status = record?.specHash === asset.hash && record.result === "pass" ? "kept" : "pass";
+                reason = status === "kept" ? undefined : (record ? "its source changed" : SlytherInstanceChecker.NEW);
+            }
+
+            const pass = status !== "fail" && status !== "missing";
+
+            // Without compile a source that changed is not recorded as seen, so a later build still says so.
+            this.manifest.instances[key] = {
+                ...SlytherInstanceChecker.emptyRecord(),
+                specHash: pass || this.options.compile || !record ? asset.hash : record.specHash,
+                spec: `asset ${asset.name} ref "${source.path}" to "${to}"`,
+                contentHash: pass ? source.hash : (found ?? ""),
+                result: status === "missing" ? "missing" : pass ? "pass" : "fail",
+                errors,
+            };
+            entries.push({ key, status, ...(reason ? { reason } : {}), errors });
+
+            if (status !== "kept") {
+                this.options.log?.(`${status} ${key}${reason ? `: ${reason}` : ""}`);
+            }
+        }
+
+        await this.manifest.save();
+
+        return { entries, keys };
+    }
+
+    /** The hash of what is at the path, as the parser hashes a source, or undefined when nothing is. */
+    private static async hashAt(path: string, folder: boolean): Promise<string | undefined> {
+        const info = await stat(path).catch(() => undefined);
+
+        if (!info || info.isDirectory() !== folder) {
+            return undefined;
+        }
+
+        return folder ? SlytherFolderSource.hash(path) : createHash("sha256").update(await readFile(path, "utf-8")).digest("hex");
+    }
+
+    /** Copies the source over whatever is at the target, a folder whole, leaving out what is never part of a source. */
+    private static async copy(source: string, target: string, folder: boolean): Promise<void> {
+        await rm(target, { recursive: true, force: true });
+        await mkdir(dirname(target), { recursive: true });
+
+        if (folder) {
+            await cp(source, target, { recursive: true, filter: (path) => !/(^|\/)(node_modules|\.git)(\/|$)/.test(path) });
+        } else {
+            await copyFile(source, target);
+        }
+    }
+
+    /**
      * Brings a manifest written before the rules of a kind, or the text of a declaration, were recorded
      * forward: every instance is taken to have been brought in line with the rules and the prose as they
      * are now, so what it already complies with is not updated again, only a change made from here on is
@@ -309,10 +434,11 @@ export class SlytherInstanceChecker {
         for (const [key, record] of Object.entries(this.manifest.instances)) {
             const instance = instances.get(key);
 
-            if (this.manifest.version < 2) {
-                record.rulesHash = instance?.rules ?? "";
+            if (instance) {
+                record.specHash = this.specHashOf(instance);
             }
 
+            record.rulesHash = instance?.rules ?? "";
             record.spec = instance ? this.specTextOf(instance) : "";
             record.rules = instance?.rulesText ?? "";
         }
@@ -535,7 +661,7 @@ export class SlytherInstanceChecker {
             }
 
             if (artifact.artifact === "artifact") {
-                sections.push(`${heading} The rules of every ${artifact.name}`, "", artifact.prose || "(no rules)", "");
+                sections.push(`${heading} The rules of every ${artifact.name}`, "", this.kinds.get(artifact.name)?.rulesOf() || artifact.prose || "(no rules)", "");
                 continue;
             }
 
@@ -587,7 +713,7 @@ export class SlytherInstanceChecker {
 
         const broken = reason.endsWith(SlytherInstanceChecker.GONE);
         // What evaluates it changed, not what it must do: the new evaluate decides, and a failure is fixed like any other.
-        const brings = reason !== SlytherInstanceChecker.NEW && reason !== SlytherInstanceChecker.EVALUATOR && !broken;
+        const brings = reason !== SlytherInstanceChecker.NEW && !reason.startsWith(SlytherInstanceChecker.EVALUATOR) && !broken;
 
         if (brings && this.options.compile && this.has(instance.kind, "update")) {
             return { reason, operation: "update", done: "updated", broken: false };
@@ -757,8 +883,8 @@ export class SlytherInstanceChecker {
             kind,
             name,
             artifact: new SlytherArtifact(kind, name, [], [], "", []),
-            rules: rules.scopeHash,
-            rulesText: rules.artifact.prose,
+            rules: rules.guidanceHash,
+            rulesText: rules.rulesOf(),
             references: [],
             leans: [],
             composite: false,
@@ -803,8 +929,8 @@ export class SlytherInstanceChecker {
         kinds: SlytherArtifactKind[],
         expansions: Map<string, { emitted: string[] }>,
     ): Map<string, SlytherInstanceChecker["instance"]> {
-        const rules = new Map(kinds.map((kind) => [kind.name, kind.scopeHash]));
-        const written = new Map(kinds.map((kind) => [kind.name, kind.artifact.prose]));
+        const rules = new Map(kinds.map((kind) => [kind.name, kind.guidanceHash]));
+        const written = new Map(kinds.map((kind) => [kind.name, kind.rulesOf()]));
         const checkable = new Set(kinds.filter((kind) => kind.operations.length > 0).map((kind) => kind.name));
         const composite = new Set(kinds.filter((kind) => kind.composite).map((kind) => kind.name));
         const demanded = new Set(kinds.filter((kind) => kind.demanded).map((kind) => kind.name));
@@ -853,6 +979,8 @@ export class SlytherInstanceChecker {
         instance: { kind: string; name: string; artifact: SlytherArtifact },
     ): Promise<{
         locatedWith?: string[];
+        /** Every segment as locate printed it, which the check of a rule is run with. */
+        located?: string[];
         segments?: { path: string; content: string }[];
         contentHash?: string;
         signature?: string[];
@@ -894,6 +1022,7 @@ export class SlytherInstanceChecker {
 
         return {
             ...locatedWith,
+            located: SlytherInstanceChecker.linesOf(located.stdout),
             segments,
             contentHash: SlytherInstanceChecker.hash(...segments.map((segment) => `${segment.path}\n${segment.content}`)),
             signature: signature?.code === 0 ? SlytherInstanceChecker.linesOf(signature.stdout) : undefined,
@@ -982,6 +1111,20 @@ export class SlytherInstanceChecker {
             return SlytherInstanceChecker.EVALUATOR;
         }
 
+        const checks = this.checksOf(kind);
+        const stale = [...checks].filter(([name, hash]) => record.checks?.[name]?.hash !== hash).map(([name]) => name);
+        // A check that is gone changed what evaluates it as much as a new one: its verdict no longer counts.
+        const gone = Object.keys(record.checks ?? {}).filter((name) => !checks.has(name));
+
+        if (stale.length > 0 || gone.length > 0) {
+            // Only what changed is run: the verdict of every other check stands as recorded.
+            if (record.checks) {
+                this.stale.set(key, stale);
+            }
+
+            return `${SlytherInstanceChecker.EVALUATOR}: ${[...stale, ...gone.map((name) => `${name} removed`)].join(", ")}`;
+        }
+
         for (const [reference, seen] of Object.entries(record.dependencies)) {
             const current = states.get(reference);
             const used = state.uses?.[reference] ?? ["*"];
@@ -1025,62 +1168,78 @@ export class SlytherInstanceChecker {
     }
 
     /**
-     * Runs the evaluate operation of the kind on the instance: its scripts with the id, then its prompts
-     * through the generator, each followed by what the instance must do, as declared, and its code.
-     * Every step runs even after one fails, and their errors are joined, so a fix sees every discrepancy
-     * at once rather than one step per round, which would let it satisfy one step by breaking the next.
+     * Runs the evaluate operation of the kind on the instance: its scripts with the id, or, for the check
+     * of a rule, with the segments locate printed, then its prompts through the generator, each followed
+     * by what the instance must do, as declared, and its code. Every error the check of a rule reports
+     * is named after the rule. Every step runs even after one fails, and their errors are joined, so a
+     * fix sees every discrepancy at once rather than one step per round, which would let it satisfy one
+     * step by breaking the next. Given the checks that changed, only those are run, and what the others
+     * found last time stands. What every check found is kept, to be recorded with the instance.
      */
     private async evaluate(
         instance: { kind: string; name: string; artifact: SlytherArtifact; demands?: string },
         key: string,
         state: SlytherInstanceChecker["state"],
+        only?: string[],
     ): Promise<{ pass: boolean; errors: string[] }> {
         const operation = this.built.operations[`${instance.kind}::evaluate`];
 
         if (!operation) {
+            this.checks.delete(key);
+
             return { pass: true, errors: [] };
         }
 
+        const hashes = this.checksOf(instance.kind);
+        const recorded = this.manifest.instances[key]?.checks ?? {};
+        const found: NonNullable<SlytherInstanceManifest["instances"][string]["checks"]> = {};
         const errors: string[] = [];
 
         for (const step of operation.steps) {
-            if (step.run) {
+            const kept = only && !only.includes(step.name) ? recorded[step.name] : undefined;
+            const named = (error: string) => (step.rule ? `${step.rule}${SlytherInstanceChecker.RULE}${error}` : error);
+            let reported: string[];
+
+            if (kept) {
+                reported = kept.errors;
+            } else if (step.run) {
                 this.options.say?.(`${key}: evaluating with ${step.run.join(" ")}`);
 
-                const result = await ProcessUtils.run([...step.run, ...SlytherArtifactKind.argsOf(operation, instance, key, [])], { cwd: this.cwd, timeout: SlytherInstanceChecker.TIMEOUT });
+                const args = step.rule ? (state.located ?? []) : SlytherArtifactKind.argsOf(operation, instance, key, []);
+                const env = step.rule ? SlytherInstanceChecker.envOf(operation, instance, key) : undefined;
+                const result = await ProcessUtils.run([...step.run, ...args], { cwd: this.cwd, timeout: SlytherInstanceChecker.TIMEOUT, ...(env ? { env } : {}) });
 
-                if (result.code !== 0) {
-                    errors.push(...SlytherInstanceChecker.linesOf(`${result.stdout}\n${result.stderr}`));
-                }
+                reported = result.code === 0 ? [] : SlytherInstanceChecker.linesOf(`${result.stdout}\n${result.stderr}`).map(named);
+            } else {
+                const prompt = [
+                    await readFile(join(this.cwd, this.artifacts, step.path), "utf-8"),
+                    `## The ${instance.kind} to evaluate: ${instance.name}`,
+                    "",
+                    "### What it must do",
+                    "",
+                    SlytherInstanceChecker.mustOf(instance),
+                    "",
+                    "### Its code",
+                    "",
+                    ...state.segments!.map((segment) => `#### ${segment.path}\n\n\`\`\`\n${segment.content}\n\`\`\``),
+                    "",
+                    ...SlytherInstanceChecker.section("### What it references", this.contextOf(instance, "####")),
+                    "Reply with `pass` true when it complies with everything above, else false with one entry in `errors` per discrepancy.",
+                ].join("\n");
+                const cast = SlytherRole.cast(step.role ?? SlytherRole.standardOf("judge"), this.roles);
 
-                continue;
+                this.options.say?.(`${key}: evaluating with the ${SlytherRole.labelOf(cast)} (${step.path})`);
+
+                const verdict = await this.generator.ask<{ pass: boolean; errors: string[] }>(prompt, SlytherInstanceChecker.VERDICT, undefined, cast);
+
+                reported = verdict.result.pass ? [] : verdict.result.errors.map(named);
             }
 
-            const prompt = [
-                await readFile(join(this.cwd, this.artifacts, step.path), "utf-8"),
-                `## The ${instance.kind} to evaluate: ${instance.name}`,
-                "",
-                "### What it must do",
-                "",
-                SlytherInstanceChecker.mustOf(instance),
-                "",
-                "### Its code",
-                "",
-                ...state.segments!.map((segment) => `#### ${segment.path}\n\n\`\`\`\n${segment.content}\n\`\`\``),
-                "",
-                ...SlytherInstanceChecker.section("### What it references", this.contextOf(instance, "####")),
-                "Reply with `pass` true when it complies with everything above, else false with one entry in `errors` per discrepancy.",
-            ].join("\n");
-            const cast = SlytherRole.cast(step.role ?? SlytherRole.standardOf("judge"), this.roles);
-
-            this.options.say?.(`${key}: evaluating with the ${SlytherRole.labelOf(cast)} (${step.path})`);
-
-            const verdict = await this.generator.ask<{ pass: boolean; errors: string[] }>(prompt, SlytherInstanceChecker.VERDICT, undefined, cast);
-
-            if (!verdict.result.pass) {
-                errors.push(...verdict.result.errors);
-            }
+            found[step.name] = { hash: hashes.get(step.name) ?? "", pass: reported.length === 0, errors: reported };
+            errors.push(...reported);
         }
+
+        this.checks.set(key, found);
 
         return { pass: errors.length === 0, errors };
     }
@@ -1285,17 +1444,44 @@ export class SlytherInstanceChecker {
         return sections.length === 0 ? [] : [heading, "", ...sections];
     }
 
-    /** The hash of every script and prompt that takes part in evaluating an instance of the kind, or in expanding it. */
+    /** The hash of every script that reads an instance of the kind, as built: locate, signature, uses and expand. */
     private evaluatedWithOf(kind: string): string {
-        const paths = ["locate", "signature", "uses", "evaluate", SlytherArtifactKind.EXPAND].flatMap(
+        const paths = ["locate", "signature", "uses", SlytherArtifactKind.EXPAND].flatMap(
             (operation) => this.built.operations[`${kind}::${operation}`]?.steps.map((step) => step.path) ?? [],
         );
-        // A verdict is only as good as whoever gave it: who plays the judge of every llm step is part of what evaluates.
-        const judges = (this.built.operations[`${kind}::evaluate`]?.steps ?? [])
-            .filter((step) => step.kind === "llm")
-            .map((step) => `${step.path} judged by ${SlytherRole.fingerprintOf(SlytherRole.cast(step.role ?? SlytherRole.standardOf("judge"), this.roles))}`);
 
-        return SlytherInstanceChecker.hash(...paths.map((path) => `${path}@${this.built.files[path]?.outputHash ?? ""}`), ...judges);
+        return SlytherInstanceChecker.hash(...paths.map((path) => `${path}@${this.built.files[path]?.outputHash ?? ""}`));
+    }
+
+    /**
+     * The hash of every step of the evaluate of the kind, keyed by its name: its script or its prompt as
+     * built and, for an llm step, who plays its judge, since a verdict is only as good as whoever gave it.
+     */
+    private checksOf(kind: string): Map<string, string> {
+        return new Map(
+            (this.built.operations[`${kind}::evaluate`]?.steps ?? []).map((step) => [
+                step.name,
+                SlytherInstanceChecker.hash(
+                    `${step.path}@${this.built.files[step.path]?.outputHash ?? ""}`,
+                    ...(step.kind === "llm" ? [`judged by ${SlytherRole.fingerprintOf(SlytherRole.cast(step.role ?? SlytherRole.standardOf("judge"), this.roles))}`] : []),
+                ),
+            ]),
+        );
+    }
+
+    /**
+     * The args of the instance as the check of a rule finds them: one variable per param of the
+     * operation, named after it in upper case after #{ENV}, with the value the operation would be run with.
+     */
+    static envOf(operation: { kind: string; name: string; params: { name: string; optional: boolean }[] }, instance: { name: string; artifact: SlytherArtifact; demands?: string }, key: string): Record<string, string> {
+        const args = SlytherArtifactKind.argsOf(operation, instance, key, []);
+
+        return Object.fromEntries(operation.params.map((param, index) => [`${SlytherInstanceChecker.ENV}${param.name.toUpperCase().replace(/-/g, "_")}`, args[index]!]));
+    }
+
+    /** What every check found, as its record keeps it, or nothing when there is none. */
+    private static checksRecordOf(checks: SlytherInstanceManifest["instances"][string]["checks"]): { checks?: SlytherInstanceManifest["instances"][string]["checks"] } {
+        return checks ? { checks } : {};
     }
 
     /** Who wrote the instance, as its record keeps it: where its code came from, which never makes it be written again. */

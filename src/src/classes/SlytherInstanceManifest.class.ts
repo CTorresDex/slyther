@@ -6,12 +6,12 @@ export class SlytherInstanceManifest {
     /** The name of the manifest inside the instances folder. */
     static readonly FILE = "manifest.json";
     /** What a manifest written by this version records, so an older one can be brought forward on load. */
-    static readonly VERSION = 3;
+    static readonly VERSION = 4;
 
     private constructor(
         /** Where the manifest is written. */
         private readonly path: string,
-        /** The version the manifest on disk was written with: 1 is before the rules of a kind were recorded, 2 before their text was. */
+        /** The version the manifest on disk was written with: 1 is before the rules of a kind were recorded, 2 before their text was, 3 before every check was recorded on its own. */
         readonly version: number,
         /** Every instance checked, keyed by `kind:name`: what deciding to check it again needs. */
         readonly instances: Record<
@@ -39,8 +39,10 @@ export class SlytherInstanceManifest {
                 signature?: string[];
                 /** What every instance it references looked like when it was evaluated. */
                 dependencies: Record<string, { contentHash: string; signature?: string[] }>;
-                /** The hash of the scripts and prompts it was evaluated with, and of who judged it. */
+                /** The hash of the scripts that read it: locate, signature, uses and expand, as built. Before version 4, of what evaluated it as well. */
                 evaluatedWith: string;
+                /** Every step of evaluate, keyed by its name: the hash of its script or prompt, and of who judges it, and what it found. Absent before version 4. */
+                checks?: Record<string, { hash: string; pass: boolean; errors: string[] }>;
                 /** Who last wrote it: the role, who played it and how. A record of where its code came from, never a reason to write it again. */
                 writtenBy?: string;
                 result: "pass" | "fail" | "missing" | "orphan";

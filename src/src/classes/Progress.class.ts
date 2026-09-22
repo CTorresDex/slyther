@@ -17,7 +17,7 @@ export class Progress {
     /** When the current label was set, so a long wait shows its duration. */
     private since = Date.now();
 
-    private constructor(private label: string) {}
+    private constructor(private label: string | (() => string)) {}
 
     /** An indicator for the work the label names. Nothing is drawn until it is run. */
     static of(label: string): Progress {
@@ -35,8 +35,11 @@ export class Progress {
         }
     }
 
-    /** Changes what the indicator says it is waiting on. */
-    say(label: string): void {
+    /**
+     * Changes what the indicator says it is waiting on: a label, or what gives the label each time it is
+     * drawn, which then says for itself how long it has waited.
+     */
+    say(label: string | (() => string)): void {
         this.label = label;
         this.since = Date.now();
         this.draw();
@@ -78,9 +81,15 @@ export class Progress {
         }
 
         const waited = Date.now() - this.since;
+        const line =
+            typeof this.label === "function"
+                ? `${Progress.FRAMES[this.frame]} ${this.label()}`
+                : `${Progress.FRAMES[this.frame]} ${this.label}${waited >= Progress.PATIENCE ? ` · ${StringUtils.duration(waited)}` : ""}`;
+        // A line wider than the terminal wraps, and clearing it would then leave the wrapped part behind.
+        const width = Math.max((process.stderr.columns ?? 80) - 1, 1);
 
         this.erase();
-        process.stderr.write(`${Progress.FRAMES[this.frame]} ${this.label}${waited >= Progress.PATIENCE ? ` · ${StringUtils.duration(waited)}` : ""}`);
+        process.stderr.write(line.length > width ? `${line.slice(0, width - 1)}…` : line);
     }
 
     private erase(): void {

@@ -84,10 +84,10 @@ describe("SlytherLanguageService", () => {
             "Users:8-10",
             "Users::save:8-10",
         ]);
-        expect(service.completions(main, 10, "cl").map((item) => item.label)).toEqual(["class", "method", "@artifact", "@import", "@use", "@lang", "@run"]);
-        expect(service.completions(other, 1, "  op").map((item) => item.label)).toEqual(["operation"]);
+        expect(service.completions(main, 10, "cl").map((item) => item.label)).toEqual(["class", "method", "@artifact", "@trait", "@import", "@use", "@lang", "@run"]);
+        expect(service.completions(other, 1, "  op").map((item) => item.label)).toEqual(["operation", "rule"]);
         expect(service.completions(other, 3, "    ").map((item) => item.label)).toEqual(["llm", "deterministic"]);
-        expect(service.completions(main, 10, "class X (a: string): d").map((item) => item.label)).toEqual(["deterministic"]);
+        expect(service.completions(main, 10, "class X (a: string): d").map((item) => item.label)).toEqual(["deterministic", "negative"]);
         expect(service.completions(main, 10, "class X (a: ").slice(0, 4).map((item) => item.label)).toEqual(["string", "number", "boolean", "App"]);
         expect(service.completions(main, 10, "@use A").map((item) => item.label)).toEqual(["App"]);
         expect(service.completions(other, 1, "  operation create (").map((item) => `${item.label}: ${item.detail}`)).toEqual(["id: string", "kind: string"]);

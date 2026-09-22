@@ -12,9 +12,9 @@ import { SlytherSourceMap } from "./SlytherSourceMap.class.ts";
 
 export class SlytherLanguageService {
     /** The directives a line may open with, outside every block. */
-    private static readonly DIRECTIVES = ["@artifact", "@import", "@use", "@lang", "@run"];
-    /** The only qualifier there is. */
-    private static readonly QUALIFIERS = ["deterministic"];
+    private static readonly DIRECTIVES = ["@artifact", "@trait", "@import", "@use", "@lang", "@run"];
+    /** The qualifiers there are: an operation or a rule is deterministic, a rule is negative. */
+    private static readonly QUALIFIERS = ["deterministic", "negative"];
     /** How many lines of prose a hover shows before cutting it short. */
     private static readonly PREVIEW = 12;
     /** `#{partial` up to the cursor: a reference being written. */

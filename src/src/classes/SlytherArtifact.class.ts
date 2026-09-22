@@ -72,8 +72,8 @@ export class SlytherArtifact {
         return this.folder ? SlytherFolderSource.text(join(cwd, this.source.path)) : readFileSync(join(cwd, this.source.path), "utf-8").trim();
     }
 
-    /** The artifact as the given kind and name, with the same prose, references and source. */
-    as(artifact: string, name: string): SlytherArtifact {
-        return new SlytherArtifact(artifact, name, [], [], this.content, this.references, this.source);
+    /** The artifact as the given kind and name, with the same prose, references and source, and the args given, if any. */
+    as(artifact: string, name: string, args: SlytherArtifact["args"] = []): SlytherArtifact {
+        return new SlytherArtifact(artifact, name, args, [], this.content, this.references, this.source);
     }
 }

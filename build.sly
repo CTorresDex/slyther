@@ -135,8 +135,9 @@ class SlytherArtifactManifest {
 
     - operations: Every operation built, keyed by `kind::name`, with its kind, its name, whether it is
       deterministic, its params, the markdown that orchestrates it when it is not deterministic, and its
-      steps in order, each with its name, its kind, its path relative to the artifacts folder and, for a
-      deterministic one, its lang and the command that runs it
+      steps in order, each with its name, its kind, its path relative to the artifacts folder, for a
+      deterministic one, its lang and the command that runs it, and, for the check of a rule, the name
+      of the rule, so whoever runs it knows to hand it the segments of the instance rather than the params
     - scripts: Every #{Compiler::SlytherRunScript} built, keyed by its name, with its name, its params and its
       steps in order, each with its name, its path relative to the artifacts folder, its lang and the
       command that runs it
@@ -167,10 +168,36 @@ class SlytherArtifactBuilder {
     that has not started is written, what is under way finishes and is recorded, and the first failure
     is what the build fails with.
 
-    The input hash of a step is the hash of its closure hash, the scope hash of its operation, the scope
-    hash of its kind, its lang and its path, so it changes when the step, the rules or the operation
-    change and not when a sibling step does. The input hash of operation.md is the hash of the closure
-    hash of the operation, the scope hash of the kind and its path.
+    The input hash of a step is the hash of its closure hash, the scope hash of its operation, what it
+    is shown of its kind, its lang and its path, so it changes when the step, the operation or what it
+    is shown change and not when a sibling step does. A deterministic step is shown the guidance of its
+    kind and the rules it references, so its hash holds the guidance hash of the kind and its own
+    closure hash covers the rules; one that references no rule is shown every rule, so its hash holds
+    the rules hash of the kind instead, as the hash of every llm step does, since a writer is shown
+    everything. The scripts of the operations that read an instance, locate, list, signature, uses and
+    expand, are shown the guidance alone and hash with it, whatever they reference: what they find is
+    not what must be true of it, so a rule that changes never rewrites them. The input hash of operation.md is the hash of the closure hash of the operation, the
+    rules hash of the kind, its steps and its path, so it is written again when a rule is added.
+
+    The check of a rule, a step of evaluate that names it, is built from the rule alone: the input hash
+    of its script is the hash of the closure hash of the rule, of every negative that references it, of
+    the scope hash of whoever owns the rule, its lang and its path, so editing a rule rebuilds its check
+    and nothing else, and adopting a rule from a trait builds its check once per kind that adopts it,
+    under that kind. Its script takes no params: it is run with every segment locate printed for the
+    instance, as locate printed them, and judges only those lines, with the file around a range as
+    context and never as what is judged, and finds the args of the instance in its environment, one
+    variable per param of evaluate named `SLYTHER_PARAM`, which may all be absent, as when it is run
+    against a negative: it then judges what the segments alone say. Its instructions hold the rule, the prose of the trait or the
+    kind that owns it, the negatives that reference it as what it must reject, the lang and the
+    conventions; once it passes its verification, it is run against every negative that references its
+    rule, written to a file of its own with the segment naming that file, and must exit with a code
+    other than 0 for each, otherwise the build sends it back to be fixed as a script that fails
+    verification is, saying which negative it accepted. The file holds the fenced code of the
+    negative, and is named as the fence names it after its lang, as in ```` ```ts index.ts ````, since a
+    rule that speaks of a file by name must find the negative under that name; a fence that names
+    none gives the file the extension of its lang. A rule speaks of some of the segments of an
+    artifact, which the check finds by their path or name and judges, passing over the rest. The markdown of an llm rule holds the rule, the
+    prose of its owner, its negatives as what breaks it, and says to judge that rule alone.
 
     A file is built when the #{SlytherArtifactManifest} does not know it, when its input hash changed,
     when it is missing, or when the hash of its content is not the output hash it was written with,
@@ -181,8 +208,12 @@ class SlytherArtifactBuilder {
     The markdown of an llm step and operation.md are written by Slyther itself: the first holds the rules
     of the kind, the params of the operation and the prose of the step, the second lists the steps in
     order, as the command to run for a deterministic one, with every param as `"{name}"`, and as the
-    markdown to follow for an llm one. A script is asked from the generator with a
-    #{SlytherGenerationTask}: its instructions hold the rules of the kind, the operation and its params,
+    markdown to follow for an llm one. The rules of the kind, wherever a writer is shown them, are its
+    guidance followed by every rule, each under its name and saying whether a script or a judge checks
+    it, the prose of every trait adopted before the rules it brings, and every negative as what never to
+    write. A script is asked from the generator with a
+    #{SlytherGenerationTask}: its instructions hold the guidance of the kind and the rules the step or
+    its operation reference, or every rule when they reference none, the operation and its params,
     the step, the conventions every script follows and the commands that run the deterministic operations
     of the kind built before it, save that signature and uses are never offered each other, and never the
     ones built after, so what a script may run is what was written
