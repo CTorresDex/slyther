@@ -1,25 +1,25 @@
 # Slyther
 
-Slyther es un lenguaje para describir en prosa el código de un proyecto y un compilador que, con un LLM, mantiene ese código en línea con la descripción.
+Slyther is a language for describing a project's code in prose, and a compiler that uses an LLM to keep that code in line with the description.
 
 ```mermaid
 flowchart LR
-    A["main.sly<br/>tipos e instancias en prosa"] --> B["build<br/>un LLM escribe las operaciones<br/>de cada tipo como scripts"]
-    B --> C["check<br/>localiza cada instancia<br/>y compara hashes"]
-    C -->|"falta o cambió"| D["create / update<br/>el LLM escribe el código"]
-    D --> E["evaluate<br/>scripts y jueces LLM"]
-    E -->|"falla"| D
+    A["main.sly<br/>kinds and instances in prose"] --> B["build<br/>an LLM writes the operations<br/>of each kind as scripts"]
+    B --> C["check<br/>locates each instance<br/>and compares hashes"]
+    C -->|"missing or changed"| D["create / update<br/>the LLM writes the code"]
+    D --> E["evaluate<br/>scripts and LLM judges"]
+    E -->|"fails"| D
 ```
 
-Cuando se le pide código a un modelo, la especificación queda en la conversación. Se commitea el código, no lo que se pidió, y cuando el requisito cambia hay que volver a pedirlo a mano. Los archivos de instrucciones como CLAUDE.md orientan al que escribe, pero nada comprueba que el resultado los cumpla, y un linter solo comprueba lo que se puede expresar como sintaxis. Una convención como "las funciones generales no van en un servicio, van a una clase de utilidades" se sostiene revisando a mano, cada vez.
+When you ask a model for code, the specification stays in the conversation. The code gets committed, what was asked for does not, and when the requirement changes someone has to ask again by hand. Instruction files like CLAUDE.md guide whoever writes, but nothing checks that the result follows them, and a linter only checks what can be expressed as syntax. A convention like "general purpose functions do not go in a service, they go in a utility class" holds only through manual review, every time.
 
-Los agentes de código resuelven la escritura, no el mantenimiento. No saben qué partes del proyecto dependen de un requisito que cambió, así que o regeneran todo, que es caro y rompe lo que funcionaba, o no regeneran nada y la prosa y el código se separan en silencio.
+Coding agents solve writing, not maintenance. They do not know which parts of a project depend on a requirement that changed, so either they regenerate everything, which is expensive and breaks what worked, or they regenerate nothing and the prose and the code drift apart silently.
 
-Slyther trata la prosa como fuente y el código como salida: la especificación de cada pieza vive en el repositorio, sus reglas se verifican en cada build y solo se vuelve a escribir lo que cambió.
+Slyther treats the prose as source and the code as output: the specification of every piece lives in the repository, its rules are checked on every build, and only what changed is written again.
 
-## Ejemplo
+## Example
 
-De [samples/services.sly](samples/services.sly), recortado:
+From [samples/services.sly](samples/services.sly), trimmed:
 
 ```
 @artifact service (requirements: string) {
@@ -51,12 +51,12 @@ service Checkout {
 }
 ```
 
-## Cómo funciona
+## How it works
 
-Un proyecto declara tipos de artefacto con sus reglas y sus operaciones, y después instancias de esos tipos. `build` le pide a un modelo que escriba cada paso determinista como script en TypeScript, Python o sh, lo ejecuta para verificarlo y lo devuelve a corregir si falla. Los scripts quedan commiteados en `.slyther/artifacts` y después corren sin modelo.
+A project declares kinds of artifact, with their rules and operations, and then instances of those kinds. `build` asks a model to write each deterministic step as a script in TypeScript, Python or sh, runs it to verify it, and sends it back to be fixed when it fails. The scripts are committed in `.slyther/artifacts` and from then on run without a model.
 
-Para cada instancia, `locate` dice dónde está su código. Slyther compara el hash de su declaración, de lo que referencia, de su código y de las reglas con el del build anterior; lo que no cambió se conserva sin llamar al modelo. Lo que falta se crea, y lo que cambió se actualiza mostrando al modelo el diff de la prosa. Después se evalúa con los scripts y con jueces que no son la sesión que escribió, y si falla se corrige con los errores. Si una dependencia cambia, solo se reevalúa lo que usa la parte que cambió. `check` hace lo mismo sin tocar el código.
+For each instance, `locate` says where its code is. Slyther compares the hash of its declaration, of what it references, of its code and of the rules against the previous build; what did not change is kept without calling the model. What is missing is created, and what changed is updated by showing the model the diff of the prose. It is then evaluated by the scripts and by judges that are not the session that wrote it, and when it fails it is fixed with the errors. When a dependency changes, only what uses the part that changed is evaluated again. `check` does the same without touching the code.
 
-## Qué no hace
+## What it does not do
 
-El único proveedor es la CLI de Claude, y cada instancia que cambia cuesta llamadas al modelo. La salida no es determinista y hay que revisarla. La prosa manda sobre el código, así que un cambio hecho solo en el código se vuelve a alinear con la prosa en el próximo `build`. No borra el código de instancias huérfanas. No conviene donde describir algo en prosa cuesta más que escribirlo, ni en proyectos que no quieran versionar `.slyther`.
+The only provider is the Claude CLI, and every instance that changes costs model calls. The output is not deterministic and has to be reviewed. The prose rules over the code, so a change made only in the code is brought back in line with the prose on the next `build`. It does not delete the code of orphaned instances. It is not worth it where describing something in prose costs more than writing it, nor in projects that do not want to version `.slyther`.
